@@ -1,0 +1,29 @@
+{
+  "duration": 62.0,
+  "segments": [
+    {
+      "start_time": 0.5,
+      "end_time": 5.8,
+      "text": "Good morning, how can I help you?",
+      "words": [
+        {"word": "Good", "start_time": 0.5, "end_time": 0.9},
+        {"word": "morning", "start_time": 0.9, "end_time": 1.4}
+      ]
+    },
+    {
+      "start_time": 6.0,
+      "end_time": 12.4,
+      "text": "I would like accommodation near the university."
+    },
+    {
+      "start_time": 12.8,
+      "end_time": 18.2,
+      "text": "Certainly, for how many nights?"
+    },
+    {
+      "start_time": 18.6,
+      "end_time": 24.0,
+      "text": "Three nights, from Friday to Sunday."
+    }
+  ]
+}

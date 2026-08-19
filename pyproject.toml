@@ -1,0 +1,18 @@
+[project]
+name = "english-practice-backend"
+version = "0.1.0"
+description = "Backend API for IELTS listening dictation practice"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings.test"
+python_files = ["test_*.py", "tests.py"]
+addopts = "--strict-markers -ra"
+testpaths = ["accounts", "listening", "practice", "common"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "DJ"]

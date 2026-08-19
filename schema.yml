@@ -1,0 +1,2707 @@
+openapi: 3.0.3
+info:
+  title: IELTS Listening Practice API
+  version: 1.0.0
+  description: |2
+
+    Backend API for uploading listening audio, managing timestamped transcript
+    segments, and running dictation practice.
+
+    ## Authentication
+
+    All endpoints except registration, login and token refresh require a JWT:
+
+        Authorization: Bearer <access_token>
+
+    Obtain a token pair from `POST /api/v1/auth/register/` or
+    `POST /api/v1/auth/login/`, and renew the access token with
+    `POST /api/v1/auth/token/refresh/`.
+
+    ## Roles
+
+    | Role | Can do |
+    |---|---|
+    | `student` | Practise published exercises, submit answers, view their own attempts |
+    | `creator` | Everything a student can, plus author, edit and publish their own exercises |
+    | `admin` | Full access to every exercise |
+
+    Only `student` and `creator` may be chosen at registration.
+
+    ## Transcript visibility
+
+    Practice endpoints never return transcript text. A learner sees the reference
+    transcript only in the response to `POST /practice/segments/{id}/submit/` or
+    `POST /practice/segments/{id}/reveal/`. The creator-facing endpoints under
+    `/listening/` do return transcripts, and are restricted to the exercise owner
+    and admins.
+
+    ## Errors
+
+    Field validation keeps DRF's native shape with a top-level code added:
+
+        {"code": "VALIDATION_ERROR", "title": ["This field is required."]}
+
+    Everything else returns a stable machine-readable code:
+
+        {"code": "EXERCISE_NOT_READY", "detail": "...", "extra": {"reasons": [...]}}
+
+    | Code | Status | Meaning |
+    |---|---|---|
+    | `VALIDATION_ERROR` | 400 | One or more fields failed validation |
+    | `AUTHENTICATION_FAILED` | 401 | Missing, invalid or expired credentials |
+    | `TOKEN_INVALID` | 401 | The refresh token is expired or malformed |
+    | `PERMISSION_DENIED` | 403 | Authenticated, but not allowed to do this |
+    | `NOT_FOUND` | 404 | No such resource, or none the caller may see |
+    | `INVALID_AUDIO_FILE` | 400 | Unsupported audio format or empty file |
+    | `AUDIO_FILE_TOO_LARGE` | 400 | Audio exceeds the configured size limit |
+    | `INVALID_SEGMENT_RANGE` | 400 | `end_time` <= `start_time`, or negative `start_time` |
+    | `SEGMENT_OUTSIDE_AUDIO` | 400 | Segment extends past the known audio duration |
+    | `DUPLICATE_SEGMENT_SEQUENCE` | 400 | Another segment already uses that sequence |
+    | `EXERCISE_NOT_READY` | 409 | Publish preconditions unmet; see `extra.reasons` |
+    | `EXERCISE_ALREADY_PUBLISHED` | 409 | Publish called on a published exercise |
+    | `EXERCISE_NOT_PUBLISHED` | 409 | Practice attempted on an unpublished exercise |
+    | `EXERCISE_PROCESSING` | 409 | Transcription is in flight; segments are locked |
+    | `TRANSCRIPT_NOT_AVAILABLE` | 409 | The segment has no transcript to score against |
+
+    Requesting a resource the caller may not see returns **404, not 403** - a 403
+    would confirm that it exists.
+paths:
+  /api/v1/auth/login/:
+    post:
+      operationId: auth_login_create
+      description: Exchange email and password for an access and refresh token. Bad
+        credentials and inactive accounts both return 401 - the response does not
+        distinguish them.
+      summary: Obtain a JWT pair
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+  /api/v1/auth/me/:
+    get:
+      operationId: auth_me_retrieve
+      description: Returns the authenticated user, including their role.
+      summary: Current user profile
+      tags:
+      - auth
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+              examples:
+                CreatorProfile:
+                  value:
+                    id: 7
+                    email: ben@example.com
+                    full_name: Ben Ito
+                    role: creator
+                    date_joined: '2026-08-19T09:00:00Z'
+                  summary: Creator profile
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+  /api/v1/auth/register/:
+    post:
+      operationId: auth_register_create
+      description: |-
+        Creates an account and returns a JWT pair, so a client can register and start working without a second round trip.
+
+        `role` may be `student` (the default) or `creator`; `admin` is rejected and cannot be self-assigned. Passwords are checked against Django's configured password validators.
+      summary: Register a new account
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+            examples:
+              StudentRegistration:
+                value:
+                  email: ann@example.com
+                  password: s3cret-passphrase
+                  full_name: Ann Lee
+                  role: student
+                summary: Student registration
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+        required: true
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+  /api/v1/auth/token/refresh/:
+    post:
+      operationId: auth_token_refresh_create
+      description: Exchange a valid refresh token for a new access token. Returns
+        401 with `TOKEN_INVALID` if the refresh token is expired or malformed.
+      summary: Refresh an access token
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TokenRefreshRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/TokenRefreshRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/TokenRefreshRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenRefreshResponse'
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+  /api/v1/listening/exercises/:
+    get:
+      operationId: listening_exercises_list
+      description: Students see published exercises. Creators additionally see their
+        own exercises in any status. Admins see everything. Segments are never included
+        in list rows.
+      summary: List exercises visible to the caller
+      parameters:
+      - in: query
+        name: is_published
+        schema:
+          type: boolean
+      - in: query
+        name: language
+        schema:
+          type: string
+      - in: query
+        name: ordering
+        schema:
+          type: string
+        description: One of created_at, -created_at, title, -title, duration.
+      - in: query
+        name: owner
+        schema:
+          type: number
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: page_size
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - in: query
+        name: search
+        schema:
+          type: string
+        description: Matches title and description.
+      - in: query
+        name: status
+        schema:
+          type: string
+          enum:
+          - draft
+          - failed
+          - processing
+          - ready
+          - uploaded
+        description: |-
+          * `draft` - Draft
+          * `uploaded` - Uploaded
+          * `processing` - Processing
+          * `ready` - Ready
+          * `failed` - Failed
+      tags:
+      - listening
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedListeningExerciseListList'
+              examples:
+                OnePageOfResults:
+                  value:
+                    count: 123
+                    next: http://api.example.org/accounts/?page=4
+                    previous: http://api.example.org/accounts/?page=2
+                    results:
+                    - count: 42
+                      next: http://localhost:8000/api/v1/listening/exercises/?page=2
+                      previous: null
+                      results:
+                      - id: 125
+                        title: Accommodation Practice
+                        owner:
+                          id: 3
+                          full_name: Ben Ito
+                        status: ready
+                        is_published: true
+                        duration: 184.2
+                        language: en
+                        segment_count: 24
+                        created_at: '2026-08-19T09:00:00Z'
+                  summary: One page of results
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+    post:
+      operationId: listening_exercises_create
+      description: Creator role required. Audio may be uploaded now or added later.
+      summary: Create an exercise
+      tags:
+      - listening
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ListeningExerciseCreateRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListeningExerciseDetail'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/listening/exercises/{exercise_id}/segments/:
+    get:
+      operationId: listening_exercises_segments_list
+      description: Includes transcript text. Owner or admin only. Not paginated.
+      summary: List an exercise's transcript segments
+      parameters:
+      - in: path
+        name: exercise_id
+        schema:
+          type: integer
+        required: true
+      - name: ordering
+        required: false
+        in: query
+        description: Which field to use when ordering the results.
+        schema:
+          type: string
+      - name: search
+        required: false
+        in: query
+        description: A search term.
+        schema:
+          type: string
+      tags:
+      - listening
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TranscriptSegmentCreator'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+    post:
+      operationId: listening_exercises_segments_create
+      description: '`sequence` may be omitted to append after the current highest.
+        Creating the first segment on an exercise that has audio moves it to the `ready`
+        status.'
+      summary: Create a transcript segment
+      parameters:
+      - in: path
+        name: exercise_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - listening
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TranscriptSegmentCreatorRequest'
+            examples:
+              AppendASegment:
+                value:
+                  start_time: 12.4
+                  end_time: 18.7
+                  text: I'd like to book a room for next weekend.
+                summary: Append a segment
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/TranscriptSegmentCreatorRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/TranscriptSegmentCreatorRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranscriptSegmentCreator'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                SequenceAlreadyTaken:
+                  value:
+                    code: DUPLICATE_SEGMENT_SEQUENCE
+                    detail: Another segment in this exercise already uses that sequence.
+                    extra:
+                      sequence: 3
+                  summary: Sequence already taken
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/listening/exercises/{exercise_id}/segments/reorder/:
+    post:
+      operationId: listening_exercises_segments_reorder_create
+      description: Atomically reassigns sequences. The payload must list every segment
+        of the exercise exactly once.
+      summary: Reorder every segment of an exercise
+      parameters:
+      - in: path
+        name: exercise_id
+        schema:
+          type: integer
+        required: true
+      - name: ordering
+        required: false
+        in: query
+        description: Which field to use when ordering the results.
+        schema:
+          type: string
+      - name: search
+        required: false
+        in: query
+        description: A search term.
+        schema:
+          type: string
+      tags:
+      - listening
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SegmentReorderRequest'
+            examples:
+              SwapTheFirstTwoSegments:
+                value:
+                  ordering:
+                  - id: 502
+                    sequence: 1
+                  - id: 501
+                    sequence: 2
+                summary: Swap the first two segments
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SegmentReorderRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SegmentReorderRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TranscriptSegmentCreator'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/listening/exercises/{id}/:
+    get:
+      operationId: listening_exercises_retrieve
+      description: '`segments` (including transcript text) is present only when the
+        caller owns the exercise or is an admin.'
+      summary: Retrieve one exercise
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this listening exercise.
+        required: true
+      tags:
+      - listening
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListeningExerciseDetail'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+    patch:
+      operationId: listening_exercises_partial_update
+      description: |-
+        Owner or admin only. `status` and `is_published` cannot be set here - use the publish and unpublish actions.
+
+        Replacing `audio_file` resets the exercise to `uploaded` and clears `duration`, because the existing segments describe the old audio. Supplying `duration` in the same request keeps the new value. Replacing audio on a published exercise returns 409; unpublish first.
+      summary: Update exercise metadata or replace its audio
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this listening exercise.
+        required: true
+      tags:
+      - listening
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedListeningExerciseUpdateRequest'
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListeningExerciseDetail'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+    delete:
+      operationId: listening_exercises_destroy
+      description: Owner or admin only. Cascades to the exercise's segments and to
+        every learner's attempts against them. This cannot be undone - prefer unpublishing
+        if the intent is only to withdraw it.
+      summary: Delete an exercise and everything derived from it
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this listening exercise.
+        required: true
+      tags:
+      - listening
+      security:
+      - jwtAuth: []
+      responses:
+        '204':
+          description: No response body
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/listening/exercises/{id}/publish/:
+    post:
+      operationId: listening_exercises_publish_create
+      description: 'Makes the exercise available to learners. Requires audio, a known
+        duration, at least one segment whose timestamps fit inside that duration,
+        and the `ready` status. A custom action rather than a PATCH of `is_published`:
+        this is a state transition with preconditions, and folding it into partial
+        update would mean running publish validation on every metadata edit.'
+      summary: Publish an exercise
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this listening exercise.
+        required: true
+      tags:
+      - listening
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExercisePublication'
+              examples:
+                Published:
+                  value:
+                    id: 125
+                    status: ready
+                    is_published: true
+                    published_at: '2026-08-19T10:00:00Z'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                PreconditionsUnmet:
+                  value:
+                    code: EXERCISE_NOT_READY
+                    detail: This exercise does not meet the requirements for publishing.
+                    extra:
+                      reasons:
+                      - missing_duration
+                      - no_segments
+                  summary: Preconditions unmet
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/listening/exercises/{id}/status/:
+    get:
+      operationId: listening_exercises_status_retrieve
+      description: Owner or admin only. A small payload intended for polling while
+        `status` is `processing`; when transcription fails, `processing_error` explains
+        why.
+      summary: Transcription status
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this listening exercise.
+        required: true
+      tags:
+      - listening
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExerciseStatus'
+              examples:
+                TranscriptionInFlight:
+                  value:
+                    id: 125
+                    status: processing
+                    is_published: false
+                    duration: null
+                    segment_count: 0
+                    processing_started_at: '2026-08-19T10:00:00Z'
+                    processing_error: ''
+                    transcription_provider: ''
+                  summary: Transcription in flight
+                TranscriptionFailed:
+                  value:
+                    id: 125
+                    status: failed
+                    is_published: false
+                    duration: null
+                    segment_count: 0
+                    processing_started_at: '2026-08-19T10:00:00Z'
+                    processing_error: Audio is 41.2 MB, above the 25 MB limit for
+                      automatic transcription.
+                    transcription_provider: ''
+                  summary: Transcription failed
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/listening/exercises/{id}/transcribe/:
+    post:
+      operationId: listening_exercises_transcribe_create
+      description: |-
+        Owner or admin only. Queues automatic transcription, replacing any existing transcript. Use it to retry after a failure, or to transcribe an exercise whose segments were written by hand.
+
+        Returns 202 with the exercise moved to `processing`. Poll `status/` for the outcome.
+      summary: Transcribe the audio again
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this listening exercise.
+        required: true
+      tags:
+      - listening
+      security:
+      - jwtAuth: []
+      responses:
+        '202':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExerciseStatus'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/listening/exercises/{id}/unpublish/:
+    post:
+      operationId: listening_exercises_unpublish_create
+      description: Withdraws the exercise from learners. Idempotent - unpublishing
+        an already-unpublished exercise succeeds. Existing practice attempts are retained.
+      summary: Unpublish an exercise
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this listening exercise.
+        required: true
+      tags:
+      - listening
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExercisePublication'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/listening/segments/{id}/:
+    get:
+      operationId: listening_segments_retrieve
+      description: Flat detail routes for a single segment.
+      summary: Retrieve one transcript segment
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this transcript segment.
+        required: true
+      tags:
+      - listening
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranscriptSegmentCreator'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+    patch:
+      operationId: listening_segments_partial_update
+      description: Owner or admin only. `word_count` is recomputed. Past attempts
+        keep their own snapshot of the transcript, so correcting a typo never changes
+        a learner's historical score.
+      summary: Correct transcript text or adjust timestamps
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this transcript segment.
+        required: true
+      tags:
+      - listening
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedTranscriptSegmentCreatorRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedTranscriptSegmentCreatorRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedTranscriptSegmentCreatorRequest'
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranscriptSegmentCreator'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+    delete:
+      operationId: listening_segments_destroy
+      description: Removing the last segment returns the exercise to `uploaded` and
+        unpublishes it, since a published exercise must be `ready`.
+      summary: Delete a transcript segment
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this transcript segment.
+        required: true
+      tags:
+      - listening
+      security:
+      - jwtAuth: []
+      responses:
+        '204':
+          description: No response body
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/practice/attempts/:
+    get:
+      operationId: practice_attempts_list
+      description: Always filtered to the calling user - another learner's attempts
+        are not addressable through this endpoint.
+      summary: List the caller's individual attempts
+      parameters:
+      - in: query
+        name: date_from
+        schema:
+          type: string
+        description: Inclusive lower bound, YYYY-MM-DD.
+      - in: query
+        name: date_to
+        schema:
+          type: string
+        description: Inclusive upper bound, YYYY-MM-DD.
+      - in: query
+        name: exercise
+        schema:
+          type: integer
+        description: Limit to one exercise.
+      - in: query
+        name: kind
+        schema:
+          type: string
+          enum:
+          - reveal
+          - submission
+      - name: ordering
+        required: false
+        in: query
+        description: Which field to use when ordering the results.
+        schema:
+          type: string
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: page_size
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: search
+        required: false
+        in: query
+        description: A search term.
+        schema:
+          type: string
+      - in: query
+        name: segment
+        schema:
+          type: integer
+        description: Limit to one segment.
+      tags:
+      - practice
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedPracticeAttemptList'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/practice/exercises/{exercise_id}/progress/:
+    get:
+      operationId: practice_exercises_progress_retrieve
+      description: |-
+        Always scoped to the calling user.
+
+        - **attempted**: distinct segments with at least one submission
+        - **completed**: distinct segments whose *best* submission reaches the completion threshold
+        - **average_score**: mean of each attempted segment's *best* score, so retrying a segment can only raise it
+        - **revealed**: distinct segments the learner revealed; never counted as attempted or completed
+      summary: Progress on one exercise
+      parameters:
+      - in: path
+        name: exercise_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - practice
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Progress'
+              examples:
+                Part-wayThrough:
+                  value:
+                    exercise_id: 125
+                    total_segments: 24
+                    attempted_segments: 10
+                    completed_segments: 8
+                    revealed_segments: 2
+                    progress_percentage: 33.3
+                    average_score: 86.4
+                    last_segment_sequence: 9
+                    last_practiced_at: '2026-08-19T10:06:00Z'
+                  summary: Part-way through
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/practice/exercises/{exercise_id}/segments/:
+    get:
+      operationId: practice_exercises_segments_list
+      description: Playback windows only - the transcript is never included. Each
+        row carries this learner's progress on that segment.
+      summary: List an exercise's segments for practice
+      parameters:
+      - in: path
+        name: exercise_id
+        schema:
+          type: integer
+        required: true
+      - name: ordering
+        required: false
+        in: query
+        description: Which field to use when ordering the results.
+        schema:
+          type: string
+      - name: search
+        required: false
+        in: query
+        description: A search term.
+        schema:
+          type: string
+      tags:
+      - practice
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PracticeSegmentProgress'
+              examples:
+                TwoSegments,OneAttempted:
+                  value:
+                  - - id: 501
+                      sequence: 1
+                      start_time: 0.5
+                      end_time: 5.8
+                      word_count: 7
+                      attempted: true
+                      best_score: 91.0
+                    - id: 502
+                      sequence: 2
+                      start_time: 6.0
+                      end_time: 12.4
+                      word_count: 9
+                      attempted: false
+                      best_score: null
+                  summary: Two segments, one attempted
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/practice/exercises/{exercise_id}/segments/{segment_id}/:
+    get:
+      operationId: practice_exercises_segments_retrieve
+      description: Timings only. The `text` field does not exist on this representation
+        - the transcript is released by submitting an answer or by revealing it.
+      summary: Retrieve one segment for practice
+      parameters:
+      - in: path
+        name: exercise_id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: segment_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - practice
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PracticeSegment'
+              examples:
+                PlaybackWindowOnly:
+                  value:
+                    id: 501
+                    sequence: 8
+                    start_time: 32.5
+                    end_time: 38.9
+                    word_count: 11
+                  summary: Playback window only
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/practice/exercises/{exercise_id}/start/:
+    post:
+      operationId: practice_exercises_start_create
+      description: Returns the next segment the learner has not yet answered, or null
+        once every segment has been attempted. Stateless - no session is created,
+        because where a learner left off is derivable from their attempts.
+      summary: Start or resume practising an exercise
+      parameters:
+      - in: path
+        name: exercise_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - practice
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PracticeStart'
+              examples:
+                ResumingPart-wayThrough:
+                  value:
+                    exercise_id: 125
+                    title: Accommodation Practice
+                    audio_url: http://localhost:8000/media/audio/3/9f2c.mp3
+                    total_segments: 24
+                    attempted_segments: 8
+                    current_segment:
+                      id: 501
+                      sequence: 9
+                      start_time: 32.5
+                      end_time: 38.9
+                      word_count: 11
+                  summary: Resuming part-way through
+                EverySegmentAttempted:
+                  value:
+                    exercise_id: 125
+                    title: Accommodation Practice
+                    audio_url: http://localhost:8000/media/audio/3/9f2c.mp3
+                    total_segments: 24
+                    attempted_segments: 24
+                    current_segment: null
+                  summary: Every segment attempted
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/practice/history/:
+    get:
+      operationId: practice_history_list
+      description: The calling user's own history, most recently practised first.
+        Includes exercises that have since been unpublished, so a learner never loses
+        sight of work they did.
+      summary: Practice history, aggregated per exercise
+      parameters:
+      - in: query
+        name: date_from
+        schema:
+          type: string
+        description: Inclusive lower bound, YYYY-MM-DD.
+      - in: query
+        name: date_to
+        schema:
+          type: string
+        description: Inclusive upper bound, YYYY-MM-DD.
+      - in: query
+        name: exercise
+        schema:
+          type: integer
+        description: Limit to one exercise.
+      - name: ordering
+        required: false
+        in: query
+        description: Which field to use when ordering the results.
+        schema:
+          type: string
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: page_size
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: search
+        required: false
+        in: query
+        description: A search term.
+        schema:
+          type: string
+      tags:
+      - practice
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedHistoryItemList'
+              examples:
+                OneExercisePractised:
+                  value:
+                    count: 123
+                    next: http://api.example.org/accounts/?page=4
+                    previous: http://api.example.org/accounts/?page=2
+                    results:
+                    - count: 1
+                      next: null
+                      previous: null
+                      results:
+                      - exercise:
+                          id: 125
+                          title: Accommodation Practice
+                          total_segments: 24
+                        total_attempts: 34
+                        last_practiced_at: '2026-08-19T10:06:00Z'
+                        attempted_segments: 20
+                        completed_segments: 17
+                        average_score: 87.5
+                  summary: One exercise practised
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/practice/segments/{segment_id}/reveal/:
+    post:
+      operationId: practice_segments_reveal_create
+      description: 'For a learner who wants to give up on a segment. Recorded as an
+        attempt with `kind=reveal` and no score: it appears in history, is excluded
+        from average score, and does not mark the segment attempted or completed.'
+      summary: Reveal a segment's transcript
+      parameters:
+      - in: path
+        name: segment_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - practice
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reveal'
+              examples:
+                TranscriptReleased:
+                  value:
+                    attempt_id: 992
+                    segment_id: 501
+                    text: I would like accommodation near the university.
+                    revealed: true
+                    created_at: '2026-08-19T10:06:00Z'
+                  summary: Transcript released
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/practice/segments/{segment_id}/submit/:
+    post:
+      operationId: practice_segments_submit_create
+      description: Scores the answer against the segment transcript and records the
+        attempt. The transcript is returned in the response - after submission is
+        the first point a learner is allowed to see it. Repeat submissions are allowed
+        and each creates a new attempt.
+      summary: Submit a dictation answer
+      parameters:
+      - in: path
+        name: segment_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - practice
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PracticeSubmissionRequest'
+            examples:
+              AnswerMissingOneWord:
+                value:
+                  answer: I would like accommodation near university
+                summary: Answer missing one word
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PracticeSubmissionRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PracticeSubmissionRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PracticeResult'
+              examples:
+                ScoredResult:
+                  value:
+                    attempt_id: 991
+                    segment_id: 501
+                    score: 85.7
+                    user_answer: I would like accommodation near university
+                    correct_answer: I would like accommodation near the university.
+                    result:
+                      correct:
+                      - i
+                      - would
+                      - like
+                      - accommodation
+                      - near
+                      - university
+                      missing:
+                      - expected: the
+                        position: 5
+                      extra: []
+                      incorrect: []
+                      counts:
+                        correct: 6
+                        missing: 1
+                        extra: 0
+                        incorrect: 0
+                        expected_total: 7
+                    created_at: '2026-08-19T10:05:00Z'
+                  summary: Scored result
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+components:
+  schemas:
+    AttemptExercise:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+      required:
+      - id
+      - title
+    AttemptSegment:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        sequence:
+          type: integer
+          readOnly: true
+      required:
+      - id
+      - sequence
+    Error:
+      type: object
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable error code.
+        detail:
+          type: string
+          description: Human-readable explanation.
+        extra:
+          type: object
+          additionalProperties: {}
+          description: Structured detail specific to the error code.
+      required:
+      - code
+      - detail
+    ExerciseOwner:
+      type: object
+      description: Compact owner reference embedded in exercise payloads.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        full_name:
+          type: string
+          readOnly: true
+      required:
+      - full_name
+      - id
+    ExercisePublication:
+      type: object
+      description: Response for the publish and unpublish transitions.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        status:
+          allOf:
+          - $ref: '#/components/schemas/ExerciseStatusEnum'
+          readOnly: true
+        is_published:
+          type: boolean
+          readOnly: true
+        published_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+      required:
+      - id
+      - is_published
+      - published_at
+      - status
+    ExerciseStatus:
+      type: object
+      description: |-
+        Cheap polling target while transcription runs.
+
+        Deliberately smaller than the detail payload: a client waiting for `ready`
+        may hit this every few seconds.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        status:
+          allOf:
+          - $ref: '#/components/schemas/ExerciseStatusEnum'
+          readOnly: true
+        is_published:
+          type: boolean
+          readOnly: true
+        duration:
+          type: number
+          format: double
+          readOnly: true
+          nullable: true
+          description: Audio length in seconds.
+        segment_count:
+          type: integer
+          readOnly: true
+        processing_started_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        processing_error:
+          type: string
+          readOnly: true
+        transcription_provider:
+          type: string
+          readOnly: true
+      required:
+      - duration
+      - id
+      - is_published
+      - processing_error
+      - processing_started_at
+      - segment_count
+      - status
+      - transcription_provider
+    ExerciseStatusEnum:
+      enum:
+      - draft
+      - uploaded
+      - processing
+      - ready
+      - failed
+      type: string
+      description: |-
+        * `draft` - Draft
+        * `uploaded` - Uploaded
+        * `processing` - Processing
+        * `ready` - Ready
+        * `failed` - Failed
+    HistoryExercise:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+          nullable: true
+        total_segments:
+          type: integer
+          readOnly: true
+      required:
+      - id
+      - title
+      - total_segments
+    HistoryItem:
+      type: object
+      description: One exercise's worth of a learner's practice history.
+      properties:
+        exercise:
+          allOf:
+          - $ref: '#/components/schemas/HistoryExercise'
+          readOnly: true
+        attempted_segments:
+          type: integer
+          readOnly: true
+        completed_segments:
+          type: integer
+          readOnly: true
+        total_attempts:
+          type: integer
+          readOnly: true
+        average_score:
+          type: number
+          format: double
+          readOnly: true
+          nullable: true
+        last_practiced_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - attempted_segments
+      - average_score
+      - completed_segments
+      - exercise
+      - last_practiced_at
+      - total_attempts
+    KindEnum:
+      enum:
+      - submission
+      - reveal
+      type: string
+      description: |-
+        * `submission` - Submission
+        * `reveal` - Reveal
+    ListeningExerciseCreateRequest:
+      type: object
+      description: Create input. ``owner``, ``status`` and ``is_published`` are derived.
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+        language:
+          type: string
+          minLength: 1
+          maxLength: 10
+        audio_file:
+          type: string
+          format: binary
+          nullable: true
+          description: 'Optional at creation. Allowed: .mp3, .m4a, .wav, .ogg.'
+        duration:
+          type: number
+          format: double
+          minimum: 0.0001
+          nullable: true
+          description: Audio length in seconds. Creator-supplied for now; the future
+            transcription pipeline will set it automatically. Required before an exercise
+            can be published.
+      required:
+      - title
+    ListeningExerciseDetail:
+      type: object
+      description: Detail view. ``segments`` is present only for the owner or an admin.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+        description:
+          type: string
+          readOnly: true
+        owner:
+          allOf:
+          - $ref: '#/components/schemas/ExerciseOwner'
+          readOnly: true
+        status:
+          allOf:
+          - $ref: '#/components/schemas/ExerciseStatusEnum'
+          readOnly: true
+        is_published:
+          type: boolean
+          readOnly: true
+        published_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        duration:
+          type: number
+          format: double
+          readOnly: true
+          nullable: true
+          description: Audio length in seconds.
+        language:
+          type: string
+          readOnly: true
+        audio_url:
+          type: string
+          nullable: true
+          readOnly: true
+        segment_count:
+          type: integer
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - audio_url
+      - created_at
+      - description
+      - duration
+      - id
+      - is_published
+      - language
+      - owner
+      - published_at
+      - segment_count
+      - status
+      - title
+      - updated_at
+    ListeningExerciseList:
+      type: object
+      description: List rows. Deliberately excludes description and segments.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+        owner:
+          allOf:
+          - $ref: '#/components/schemas/ExerciseOwner'
+          readOnly: true
+        status:
+          allOf:
+          - $ref: '#/components/schemas/ExerciseStatusEnum'
+          readOnly: true
+        is_published:
+          type: boolean
+          readOnly: true
+        duration:
+          type: number
+          format: double
+          readOnly: true
+          nullable: true
+          description: Audio length in seconds.
+        language:
+          type: string
+          readOnly: true
+        segment_count:
+          type: integer
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - duration
+      - id
+      - is_published
+      - language
+      - owner
+      - segment_count
+      - status
+      - title
+    LoginRequest:
+      type: object
+      description: |-
+        Email/password exchange for a JWT pair.
+
+        Written by hand rather than subclassing simplejwt's TokenObtainPairSerializer
+        so the request/response shape is explicit in the schema and the error goes
+        through the project's AuthenticationFailed path.
+      properties:
+        email:
+          type: string
+          format: email
+          minLength: 1
+        password:
+          type: string
+          writeOnly: true
+          minLength: 1
+      required:
+      - email
+      - password
+    PaginatedHistoryItemList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/HistoryItem'
+    PaginatedListeningExerciseListList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/ListeningExerciseList'
+    PaginatedPracticeAttemptList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/PracticeAttempt'
+    PatchedListeningExerciseUpdateRequest:
+      type: object
+      description: Update input. Replacing audio is a state transition handled by
+        the service.
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+        language:
+          type: string
+          minLength: 1
+          maxLength: 10
+        audio_file:
+          type: string
+          format: binary
+          nullable: true
+        duration:
+          type: number
+          format: double
+          minimum: 0.0001
+          nullable: true
+          description: Audio length in seconds. Creator-supplied for now; the future
+            transcription pipeline will set it automatically. Required before an exercise
+            can be published.
+    PatchedTranscriptSegmentCreatorRequest:
+      type: object
+      description: |-
+        Full segment representation, including transcript text.
+
+        Only ever served to the exercise owner or an admin. The practice API uses
+        a different serializer that has no ``text`` field at all.
+      properties:
+        sequence:
+          type: integer
+          minimum: 1
+          description: Omit to append after the current highest sequence.
+        start_time:
+          type: number
+          format: double
+          description: Seconds from the start of the audio.
+        end_time:
+          type: number
+          format: double
+          description: Seconds from the start of the audio.
+        text:
+          type: string
+          minLength: 1
+          description: The reference transcript for this segment.
+    PracticeAttempt:
+      type: object
+      description: One recorded attempt, as its own author sees it.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        kind:
+          allOf:
+          - $ref: '#/components/schemas/KindEnum'
+          readOnly: true
+        exercise:
+          allOf:
+          - $ref: '#/components/schemas/AttemptExercise'
+          readOnly: true
+        segment:
+          allOf:
+          - $ref: '#/components/schemas/AttemptSegment'
+          readOnly: true
+        score:
+          type: number
+          format: double
+          readOnly: true
+          nullable: true
+          description: 0-100. Null for reveals.
+        user_answer:
+          type: string
+          readOnly: true
+        result:
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - exercise
+      - id
+      - kind
+      - result
+      - score
+      - segment
+      - user_answer
+    PracticeResult:
+      type: object
+      description: The scored outcome, including the transcript now that it is earned.
+      properties:
+        attempt_id:
+          type: integer
+          readOnly: true
+        segment_id:
+          type: integer
+          readOnly: true
+        score:
+          type: number
+          format: double
+          readOnly: true
+          nullable: true
+          description: 0-100. Null for reveals.
+        user_answer:
+          type: string
+          readOnly: true
+        correct_answer:
+          type: string
+          readOnly: true
+        result:
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - attempt_id
+      - correct_answer
+      - created_at
+      - result
+      - score
+      - segment_id
+      - user_answer
+    PracticeSegment:
+      type: object
+      description: |-
+        A segment as a learner sees it: timings only.
+
+        There is deliberately no ``text`` field. Hiding the transcript is a
+        structural property of this class rather than a runtime check, so it cannot
+        leak through a context mistake or a forgotten condition.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        sequence:
+          type: integer
+          readOnly: true
+          description: 1-based display order within the exercise.
+        start_time:
+          type: number
+          format: double
+          readOnly: true
+          description: Seconds from the start of the audio.
+        end_time:
+          type: number
+          format: double
+          readOnly: true
+          description: Seconds from the start of the audio.
+        word_count:
+          type: integer
+          readOnly: true
+      required:
+      - end_time
+      - id
+      - sequence
+      - start_time
+      - word_count
+    PracticeSegmentProgress:
+      type: object
+      description: |-
+        A practice segment plus this learner's progress on it.
+
+        Inherits the text-free field list rather than redeclaring it, so the
+        transcript cannot reappear here by omission.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        sequence:
+          type: integer
+          readOnly: true
+          description: 1-based display order within the exercise.
+        start_time:
+          type: number
+          format: double
+          readOnly: true
+          description: Seconds from the start of the audio.
+        end_time:
+          type: number
+          format: double
+          readOnly: true
+          description: Seconds from the start of the audio.
+        word_count:
+          type: integer
+          readOnly: true
+        attempted:
+          type: boolean
+          readOnly: true
+        best_score:
+          type: number
+          format: double
+          readOnly: true
+          nullable: true
+      required:
+      - attempted
+      - best_score
+      - end_time
+      - id
+      - sequence
+      - start_time
+      - word_count
+    PracticeStart:
+      type: object
+      description: Everything a client needs to open (or resume) an exercise.
+      properties:
+        exercise_id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+        audio_url:
+          type: string
+          readOnly: true
+          nullable: true
+        total_segments:
+          type: integer
+          readOnly: true
+        attempted_segments:
+          type: integer
+          readOnly: true
+        current_segment:
+          allOf:
+          - $ref: '#/components/schemas/PracticeSegment'
+          readOnly: true
+          nullable: true
+      required:
+      - attempted_segments
+      - audio_url
+      - current_segment
+      - exercise_id
+      - title
+      - total_segments
+    PracticeSubmissionRequest:
+      type: object
+      description: Input for a dictation submission.
+      properties:
+        answer:
+          type: string
+          description: What the learner typed. An empty string is a valid answer and
+            scores zero; null is rejected.
+      required:
+      - answer
+    Progress:
+      type: object
+      description: |-
+        A learner's progress on one exercise.
+
+        ``attempted`` counts distinct segments with at least one submission.
+        ``completed`` counts distinct segments whose best submission reaches the
+        configured threshold. ``average_score`` is the mean of each attempted
+        segment's best score, so retrying can only raise it. Reveals are counted
+        separately and never make a segment attempted or completed.
+      properties:
+        exercise_id:
+          type: integer
+          readOnly: true
+        total_segments:
+          type: integer
+          readOnly: true
+        attempted_segments:
+          type: integer
+          readOnly: true
+        completed_segments:
+          type: integer
+          readOnly: true
+        revealed_segments:
+          type: integer
+          readOnly: true
+        progress_percentage:
+          type: number
+          format: double
+          readOnly: true
+        average_score:
+          type: number
+          format: double
+          readOnly: true
+          nullable: true
+        last_segment_sequence:
+          type: integer
+          readOnly: true
+          nullable: true
+        last_practiced_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+      required:
+      - attempted_segments
+      - average_score
+      - completed_segments
+      - exercise_id
+      - last_practiced_at
+      - last_segment_sequence
+      - progress_percentage
+      - revealed_segments
+      - total_segments
+    RegisterRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+          minLength: 1
+          maxLength: 254
+        password:
+          type: string
+          writeOnly: true
+          minLength: 1
+        full_name:
+          type: string
+          maxLength: 150
+        role:
+          allOf:
+          - $ref: '#/components/schemas/RegisterRoleEnum'
+          default: student
+          description: |-
+            Only 'student' or 'creator' may be self-assigned.
+
+            * `student` - Student
+            * `creator` - Creator
+      required:
+      - email
+      - password
+    RegisterRoleEnum:
+      enum:
+      - student
+      - creator
+      type: string
+      description: |-
+        * `student` - Student
+        * `creator` - Creator
+    Reveal:
+      type: object
+      description: The transcript, released because the learner asked to give up.
+      properties:
+        attempt_id:
+          type: integer
+          readOnly: true
+        segment_id:
+          type: integer
+          readOnly: true
+        text:
+          type: string
+          readOnly: true
+        revealed:
+          type: boolean
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - attempt_id
+      - created_at
+      - revealed
+      - segment_id
+      - text
+    RoleEnum:
+      enum:
+      - student
+      - creator
+      - admin
+      type: string
+      description: |-
+        * `student` - Student
+        * `creator` - Creator
+        * `admin` - Admin
+    SegmentReorderItemRequest:
+      type: object
+      properties:
+        id:
+          type: integer
+        sequence:
+          type: integer
+          minimum: 1
+      required:
+      - id
+      - sequence
+    SegmentReorderRequest:
+      type: object
+      description: |-
+        Whole-list reassignment of segment sequences.
+
+        Requires the complete set rather than a delta: a partial payload cannot be
+        validated as collision-free without guessing what the client intended for
+        the segments it left out.
+      properties:
+        ordering:
+          type: array
+          items:
+            $ref: '#/components/schemas/SegmentReorderItemRequest'
+      required:
+      - ordering
+    TokenPair:
+      type: object
+      description: Response shape for register and login.
+      properties:
+        user:
+          allOf:
+          - $ref: '#/components/schemas/User'
+          readOnly: true
+        access:
+          type: string
+          readOnly: true
+        refresh:
+          type: string
+          readOnly: true
+      required:
+      - access
+      - refresh
+      - user
+    TokenRefreshRequest:
+      type: object
+      properties:
+        refresh:
+          type: string
+          writeOnly: true
+          minLength: 1
+      required:
+      - refresh
+    TokenRefreshResponse:
+      type: object
+      description: Response shape for token refresh.
+      properties:
+        access:
+          type: string
+          readOnly: true
+      required:
+      - access
+    TranscriptSegmentCreator:
+      type: object
+      description: |-
+        Full segment representation, including transcript text.
+
+        Only ever served to the exercise owner or an admin. The practice API uses
+        a different serializer that has no ``text`` field at all.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        sequence:
+          type: integer
+          minimum: 1
+          description: Omit to append after the current highest sequence.
+        start_time:
+          type: number
+          format: double
+          description: Seconds from the start of the audio.
+        end_time:
+          type: number
+          format: double
+          description: Seconds from the start of the audio.
+        text:
+          type: string
+          description: The reference transcript for this segment.
+        word_count:
+          type: integer
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - end_time
+      - id
+      - start_time
+      - text
+      - updated_at
+      - word_count
+    TranscriptSegmentCreatorRequest:
+      type: object
+      description: |-
+        Full segment representation, including transcript text.
+
+        Only ever served to the exercise owner or an admin. The practice API uses
+        a different serializer that has no ``text`` field at all.
+      properties:
+        sequence:
+          type: integer
+          minimum: 1
+          description: Omit to append after the current highest sequence.
+        start_time:
+          type: number
+          format: double
+          description: Seconds from the start of the audio.
+        end_time:
+          type: number
+          format: double
+          description: Seconds from the start of the audio.
+        text:
+          type: string
+          minLength: 1
+          description: The reference transcript for this segment.
+      required:
+      - end_time
+      - start_time
+      - text
+    User:
+      type: object
+      description: Read representation of a user. Never accepts input.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        email:
+          type: string
+          format: email
+          readOnly: true
+        full_name:
+          type: string
+          readOnly: true
+        role:
+          allOf:
+          - $ref: '#/components/schemas/RoleEnum'
+          readOnly: true
+        date_joined:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - date_joined
+      - email
+      - full_name
+      - id
+      - role
+  securitySchemes:
+    jwtAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+tags:
+- name: auth
+  description: Registration, login and token renewal.
+- name: listening
+  description: Creator-facing exercise and transcript management. Payloads here contain
+    transcript text and are restricted to the owner and admins.
+- name: practice
+  description: Learner-facing dictation. Segment representations never include transcript
+    text; it is released on submit or reveal.
