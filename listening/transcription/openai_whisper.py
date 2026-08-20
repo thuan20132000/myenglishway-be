@@ -7,6 +7,8 @@ worker depends on.
 
 import logging
 
+from pathlib import Path
+
 from django.conf import settings
 
 from .base import (
@@ -17,10 +19,11 @@ from .base import (
     TranscriptResult,
     TranscriptSegmentData,
 )
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
 MODEL = "whisper-1"
+
 
 class OpenAIWhisperProvider(TranscriptionProvider):
     name = "openai-whisper"
@@ -58,16 +61,26 @@ class OpenAIWhisperProvider(TranscriptionProvider):
         # turned into a retryable error.
         client = self.client
 
-        filename = Path(audio_file.name).name  # e.g. 1b34db25....mp3
-        response = client.audio.transcriptions.create(
-            model=MODEL,
-            file=(filename, audio_file.file),
-            response_format="verbose_json",
-            timestamp_granularities=["segment", "word"],
-            language=language or None,
-        )
-        
-        print("Transcription response: ", response)
+        # FieldFile.name is a storage path ("audio/3/1b34db25.mp3"); OpenAI
+        # infers the format from the filename, so send the basename explicitly
+        # rather than letting the SDK read a path off the file object.
+        filename = Path(audio_file.name).name
+
+        try:
+            response = client.audio.transcriptions.create(
+                model=MODEL,
+                file=(filename, audio_file.file),
+                response_format="verbose_json",
+                timestamp_granularities=["segment", "word"],
+                language=language or None,
+            )
+        except Exception as exc:  # noqa: BLE001 - re-raised as our own types
+            # Classified into retryable / permanent here: the worker's retry
+            # policy depends on that split, and a raw SDK exception escaping
+            # would be retried blindly.
+            raise self._translate(exc) from exc
+        finally:
+            audio_file.close()
 
         return self._to_result(response)
 

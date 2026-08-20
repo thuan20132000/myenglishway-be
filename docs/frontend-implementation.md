@@ -1,0 +1,535 @@
+# Frontend Implementation Guide
+
+How to build a client against this API. Every shape below was read out of the
+committed `backend/schema.yml`, not written from memory — but the schema is the
+authority, and `/api/docs/` renders it interactively.
+
+**Base URL:** `/api/v1/` · **Schema:** `/api/schema/` · **Swagger:** `/api/docs/`
+
+---
+
+## 1. What the product does
+
+A creator uploads audio. The backend transcribes it into timestamped segments.
+A learner plays one segment at a time, types what they heard, and gets a score
+with word-level corrections. Progress is tracked per segment.
+
+```
+Creator                              Learner
+───────                              ───────
+upload audio                         browse published exercises
+   ↓ (background transcription)         ↓
+review / correct segments            start → resume point
+   ↓                                    ↓
+publish  ─────────────────────────►  play segment → type → submit
+                                        ↓
+                                     score + corrections
+                                        ↓
+                                     progress / history
+```
+
+---
+
+## 2. The one rule that matters
+
+**Practice endpoints never return transcript text.** A segment fetched through
+`/practice/` has exactly these fields:
+
+```json
+{ "id": 501, "sequence": 8, "start_time": 32.5, "end_time": 38.9, "word_count": 11 }
+```
+
+The learner earns the transcript in exactly two places:
+
+- the response to `POST /practice/segments/{id}/submit/` → `correct_answer`
+- the response to `POST /practice/segments/{id}/reveal/` → `text`
+
+Do not cache transcripts from those responses into a store that the "not yet
+answered" UI reads from. The backend guarantees it will never hand you the
+answer early; keeping that guarantee on the client is your job. Practically:
+hold the revealed text in the component that displays the result, keyed by
+attempt, not in a global `segmentsById` cache.
+
+`word_count` is given so you can show "11 words" or render blanks without
+knowing the words.
+
+---
+
+## 3. Authentication
+
+JWT bearer tokens. Three public endpoints; everything else needs a header.
+
+```
+Authorization: Bearer <access_token>
+```
+
+| Endpoint | Body | Returns |
+|---|---|---|
+| `POST /auth/register/` | `{email, password, full_name?, role?}` | `{user, access, refresh}` |
+| `POST /auth/login/` | `{email, password}` | `{user, access, refresh}` |
+| `POST /auth/token/refresh/` | `{refresh}` | `{access}` |
+| `GET /auth/me/` | — | `User` |
+
+`role` at registration is `"student"` (default) or `"creator"`. `"admin"` is
+rejected — don't offer it in the signup UI.
+
+**Token lifetimes:** access 60 min, refresh 7 days (both configurable server
+side — don't hardcode; decode the JWT `exp` or refresh reactively).
+
+**Recommended handling.** Register a response interceptor: on `401`, attempt a
+single refresh, replay the original request, and on a second failure clear
+tokens and route to login. Queue concurrent requests during the refresh so a
+page issuing four calls doesn't fire four refreshes.
+
+Refresh tokens are not rotated, so the same refresh token is reusable until it
+expires.
+
+**Storage.** There is no cookie/CSRF flow — tokens are yours to hold. In-memory
+access token with the refresh token in `localStorage` is the usual compromise;
+if the app has any XSS surface, prefer keeping both in memory and re-logging in
+on reload.
+
+---
+
+## 4. Roles
+
+| | student | creator | admin |
+|---|---|---|---|
+| Practise published exercises | ✅ | ✅ | ✅ |
+| See own attempts / progress / history | ✅ | ✅ | ✅ |
+| Create & edit own exercises | ❌ | ✅ | ✅ |
+| See transcripts (`/listening/` routes) | ❌ | own only | all |
+| Publish / unpublish | ❌ | own only | all |
+| See any exercise | published only | published + own | all |
+
+`GET /auth/me/` returns `role`. Gate navigation on it, but treat the server as
+the authority — a student hitting a creator route gets 403 or 404 regardless.
+
+---
+
+## 5. Creator flow
+
+### 5.1 Upload
+
+`POST /listening/exercises/` — **`multipart/form-data`**, not JSON.
+
+```
+title=Accommodation Practice     (required)
+description=IELTS Section 1      (optional)
+language=en                      (optional, default "en")
+audio_file=<File>                (optional; .mp3 .m4a .wav .ogg)
+duration=184.2                   (optional; set automatically by transcription)
+```
+
+Returns `201` with the detail shape. `status` will be `"uploaded"` when audio
+was included, `"draft"` when it wasn't.
+
+**Size limits.** The upload cap is `MAX_AUDIO_FILE_SIZE_MB` (default 50), but
+automatic transcription refuses anything over 25 MB. Validate client-side
+against 25 MB if the server has auto-transcription on, otherwise the upload
+succeeds and fails minutes later. Ask your backend which limits are configured.
+
+### 5.2 Wait for transcription
+
+Uploading queues a background job. Poll:
+
+`GET /listening/exercises/{id}/status/` (owner/admin only)
+
+```json
+{
+  "id": 125,
+  "status": "processing",
+  "is_published": false,
+  "duration": null,
+  "segment_count": 0,
+  "processing_started_at": "2026-08-19T10:00:00Z",
+  "processing_error": "",
+  "transcription_provider": ""
+}
+```
+
+Status machine:
+
+```
+draft ──(audio added)──► uploaded ──► processing ──► ready
+                                          │
+                                          └────────► failed   (processing_error explains why)
+```
+
+- **`processing`** — keep polling. Every 3–5 s is plenty; transcription of a
+  10-minute file takes tens of seconds. Back off after a minute or two.
+- **`ready`** — `segment_count > 0`, `duration` populated. Stop polling.
+- **`failed`** — show `processing_error` verbatim; it is written for the
+  creator (e.g. *"Audio is 41.2 MB, above the 25 MB limit for automatic
+  transcription."*). Offer a **Retry** button → `POST /listening/exercises/{id}/transcribe/`.
+
+There is no WebSocket push. Polling is the intended mechanism.
+
+### 5.3 Review and correct segments
+
+`GET /listening/exercises/{id}/segments/` — **not paginated**, returns a bare
+array. Includes `text`.
+
+```json
+[{ "id": 501, "sequence": 1, "start_time": 0.5, "end_time": 5.8,
+   "text": "Good morning, how can I help you?", "word_count": 7,
+   "created_at": "...", "updated_at": "..." }]
+```
+
+Editing:
+
+| Action | Call |
+|---|---|
+| Fix text / timings | `PATCH /listening/segments/{id}/` |
+| Add a segment | `POST /listening/exercises/{id}/segments/` (omit `sequence` to append) |
+| Delete | `DELETE /listening/segments/{id}/` |
+| Reorder | `POST /listening/exercises/{id}/segments/reorder/` |
+
+Reorder takes **every** segment exactly once — it is a whole-list operation,
+not a delta:
+
+```json
+{ "ordering": [ {"id": 502, "sequence": 1}, {"id": 501, "sequence": 2} ] }
+```
+
+A partial list is a 400. Build the payload from your full local list after a
+drag-and-drop.
+
+Two behaviours to surface in the UI:
+- **Deleting the last segment unpublishes the exercise** and returns it to
+  `uploaded`. Warn before doing it.
+- **Correcting text does not change past scores** — learners' attempts keep a
+  snapshot of the transcript as it read when they answered.
+
+### 5.4 Publish
+
+`POST /listening/exercises/{id}/publish/` → `200` with
+`{id, status, is_published, published_at}`.
+
+Failure is `409` with every unmet precondition at once:
+
+```json
+{ "code": "EXERCISE_NOT_READY",
+  "detail": "This exercise does not meet the requirements for publishing.",
+  "extra": { "reasons": ["missing_duration", "no_segments"] } }
+```
+
+Map `extra.reasons` to a checklist rather than showing the raw strings:
+
+| reason | Show |
+|---|---|
+| `missing_audio` | Upload an audio file |
+| `missing_duration` | Audio length unknown — re-run transcription or set it manually |
+| `no_segments` | Add at least one transcript segment |
+| `segments_exceed_duration` | Some segments end after the audio does |
+| `status_is_*` | Transcription hasn't finished (or failed) |
+
+`POST .../unpublish/` is idempotent and always `200`.
+
+Note `is_published` is **read-only** on PATCH — publishing is only ever these
+two actions.
+
+---
+
+## 6. Learner flow
+
+### 6.1 Browse
+
+`GET /listening/exercises/` — **paginated** (`{count, next, previous, results}`),
+20 per page, `page_size` up to 100.
+
+Filters: `status`, `is_published`, `owner`, `language`, `search` (title +
+description), `ordering` (`created_at`, `-created_at`, `title`, `duration`),
+`page`, `page_size`.
+
+List rows carry **no** `description` and **no** `segments` — they are for cards:
+
+```json
+{ "id": 125, "title": "Accommodation Practice",
+  "owner": {"id": 3, "full_name": "Ben Ito"},
+  "status": "ready", "is_published": true, "duration": 184.2,
+  "language": "en", "segment_count": 24, "created_at": "..." }
+```
+
+### 6.2 Start / resume
+
+`POST /practice/exercises/{id}/start/` (POST, but it writes nothing — no
+session is created).
+
+```json
+{ "exercise_id": 125, "title": "Accommodation Practice",
+  "audio_url": "http://localhost:8000/media/audio/3/9f2c.mp3",
+  "total_segments": 24, "attempted_segments": 8,
+  "current_segment": { "id": 501, "sequence": 9, "start_time": 32.5,
+                       "end_time": 38.9, "word_count": 11 } }
+```
+
+- `current_segment` is the **lowest-sequence segment with no submission** —
+  not the furthest reached. A learner who skipped segment 1 is sent back to it.
+- `current_segment` is `null` when every segment has been attempted → show a
+  completion screen.
+- **A revealed segment still counts as unanswered.** Revealing doesn't advance
+  the resume point.
+
+### 6.3 The practice loop
+
+`GET /practice/exercises/{id}/segments/` — **not paginated**, bare array, with
+per-learner progress:
+
+```json
+[{ "id": 501, "sequence": 1, "start_time": 0.5, "end_time": 5.8,
+   "word_count": 7, "attempted": true, "best_score": 91.0 }]
+```
+
+Use it for a segment rail / progress strip. `best_score` is `null` until the
+segment has a submission.
+
+**Audio playback.** One file, many segments. Load `audio_url` once and seek:
+
+```js
+function playSegment(audio, segment) {
+  audio.currentTime = segment.start_time;
+  audio.play();
+  const stop = () => {
+    if (audio.currentTime >= segment.end_time) {
+      audio.pause();
+      audio.removeEventListener('timeupdate', stop);
+    }
+  };
+  audio.addEventListener('timeupdate', stop);
+}
+```
+
+`timeupdate` fires roughly every 250 ms, so playback overshoots the end by up
+to a quarter second. If that's too loose, drive it with
+`requestAnimationFrame` instead. Dictation UIs normally offer replay,
+half-speed (`audio.playbackRate = 0.75`) and a repeat count — all client-side,
+no API involvement.
+
+**Submit.**
+
+`POST /practice/segments/{id}/submit/` with `{"answer": "..."}` → `201`:
+
+```json
+{
+  "attempt_id": 991,
+  "segment_id": 501,
+  "score": 85.7,
+  "user_answer": "I would like accommodation near university",
+  "correct_answer": "I would like accommodation near the university.",
+  "result": {
+    "correct": ["i","would","like","accommodation","near","university"],
+    "missing": [{"expected": "the", "position": 5}],
+    "extra": [],
+    "incorrect": [],
+    "counts": {"correct": 6, "missing": 1, "extra": 0, "incorrect": 0, "expected_total": 7}
+  },
+  "created_at": "..."
+}
+```
+
+An empty string is a **valid** answer (scores 0). `null` is a 400. Repeat
+submissions are allowed and each creates a new attempt — offer "try again"
+freely; a learner's average uses their *best* score per segment, so retrying
+can never hurt them.
+
+### 6.4 Rendering the diff — read this carefully
+
+Two things trip people up:
+
+**1. Diff tokens are normalized; `correct_answer` is not.** The scorer works on
+lowercased, punctuation-stripped tokens, so `result.correct` contains
+`"university"` while `correct_answer` reads `"...the university."` Don't
+string-match the arrays against the reference text. Render from the token
+arrays, or render `correct_answer` and use `position` to locate words.
+
+**2. `position` indexes different sequences depending on the bucket.**
+
+| Bucket | `position` indexes | Render against |
+|---|---|---|
+| `missing` | the **expected** token list | the reference answer |
+| `incorrect` | the **expected** token list | the reference answer |
+| `extra` | the **submitted** token list | what the learner typed |
+
+That is deliberate: you highlight omissions in the reference, and additions in
+the learner's own text.
+
+A workable rendering: tokenize `correct_answer` yourself the same way (lower,
+strip edge punctuation), walk `expected_total` positions, and mark each index
+as correct / missing / incorrect from the arrays. Show `incorrect` entries as
+`expected` vs `received` side by side — that pairing is the most useful
+feedback in the payload.
+
+**Scoring semantics worth telling the user:**
+
+- Case, punctuation and spacing never matter.
+- Spelling errors are **not** forgiven — `acommodation` is an `incorrect` pair.
+- Contractions are not expanded: `"I'd"` ≠ `"I would"`.
+- Score is `correct / max(expected_words, submitted_words)`, so padding an
+  answer with extra words lowers the score rather than being free.
+
+### 6.5 Reveal
+
+`POST /practice/segments/{id}/reveal/` → `200`:
+
+```json
+{ "attempt_id": 992, "segment_id": 501,
+  "text": "I would like accommodation near the university.",
+  "revealed": true, "created_at": "..." }
+```
+
+Put this behind a confirm — it is the "give up" action. It is recorded (visible
+in history as `kind: "reveal"`), does **not** count as attempted or completed,
+and does **not** affect `average_score`.
+
+### 6.6 Progress and history
+
+`GET /practice/exercises/{id}/progress/`:
+
+```json
+{ "exercise_id": 125, "total_segments": 24,
+  "attempted_segments": 10, "completed_segments": 8, "revealed_segments": 2,
+  "progress_percentage": 33.3, "average_score": 86.4,
+  "last_segment_sequence": 9, "last_practiced_at": "..." }
+```
+
+Definitions the UI should reflect honestly:
+
+- **attempted** — segments with ≥1 submission
+- **completed** — segments whose **best** score reached the threshold (default 80)
+- **progress_percentage** — `completed / total`, *not* attempted / total
+- **average_score** — mean of each segment's **best** score
+- `average_score` and `last_segment_sequence` are `null` for a fresh learner
+
+`GET /practice/history/` — **paginated**, one row per exercise, most recently
+practised first. Filters: `exercise`, `date_from`, `date_to` (both `YYYY-MM-DD`).
+
+```json
+{ "exercise": {"id": 125, "title": "...", "total_segments": 24},
+  "attempted_segments": 20, "completed_segments": 17, "total_attempts": 34,
+  "average_score": 87.5, "last_practiced_at": "..." }
+```
+
+Exercises stay in history after being unpublished, so a row may reference an
+exercise the learner can no longer open — handle that link gracefully.
+
+`GET /practice/attempts/` — **paginated**, individual attempts, newest first.
+Filters: `exercise`, `segment`, `kind` (`submission`|`reveal`), `date_from`,
+`date_to`. Always the caller's own; another learner's attempts are not
+addressable.
+
+---
+
+## 7. Errors
+
+Two shapes. **Field validation** keeps a key per field:
+
+```json
+{ "code": "VALIDATION_ERROR", "title": ["This field is required."] }
+```
+
+Map those onto form fields directly. **Everything else** is flat:
+
+```json
+{ "code": "EXERCISE_NOT_READY", "detail": "...", "extra": {"reasons": [...]} }
+```
+
+Branch on `code`, never on `detail` — the prose may change.
+
+| Code | Status | Suggested UX |
+|---|---|---|
+| `VALIDATION_ERROR` | 400 | Inline field errors |
+| `AUTHENTICATION_FAILED` | 401 | Refresh once, then log out |
+| `TOKEN_INVALID` | 401 | Log out |
+| `PERMISSION_DENIED` | 403 | "You don't have access" |
+| `NOT_FOUND` | 404 | Not-found page |
+| `INVALID_AUDIO_FILE` / `AUDIO_FILE_TOO_LARGE` | 400 | Upload field error |
+| `INVALID_SEGMENT_RANGE` | 400 | Highlight the field in `extra.field` |
+| `SEGMENT_OUTSIDE_AUDIO` | 400 | "Segment ends after the audio does" |
+| `DUPLICATE_SEGMENT_SEQUENCE` | 400 | "Position already taken" |
+| `EXERCISE_NOT_READY` | 409 | Publish checklist from `extra.reasons` |
+| `EXERCISE_ALREADY_PUBLISHED` | 409 | Refresh state; it's already live |
+| `EXERCISE_NOT_PUBLISHED` | 409 | "No longer available" — leave practice |
+| `EXERCISE_PROCESSING` | 409 | "Transcription in progress" — disable editing |
+| `TRANSCRIPT_NOT_AVAILABLE` | 409 | Segment has no transcript |
+
+**404 vs 403 is meaningful.** Resources you may not see return **404**, because
+a 403 would confirm they exist. Don't render "permission denied" for a 404 —
+say not found.
+
+---
+
+## 8. Gotchas
+
+- **Pagination is inconsistent by design.** Exercise list, history and attempts
+  are paginated objects. Segment lists (both creator and practice) are **bare
+  arrays** — a transcript is read whole. Don't write one generic list handler
+  that assumes `.results`.
+- **The schema under-documents the exercise detail response.** `segments`,
+  `processing_error`, `processing_started_at` and `transcription_provider` are
+  added conditionally for the owner/admin and **do not appear in `schema.yml`**.
+  A generated client will not have them. Add them to your types by hand:
+
+  ```ts
+  type ExerciseDetail = GeneratedDetail & {
+    segments?: TranscriptSegment[];      // owner/admin only
+    processing_error?: string;           // owner/admin only
+    processing_started_at?: string | null;
+    transcription_provider?: string;
+  };
+  ```
+
+  For a student the keys are **absent**, not null — use presence checks.
+- **Uploads are multipart, everything else is JSON.** Don't set
+  `Content-Type` manually on multipart requests; let the browser add the boundary.
+- **`audio_url` is absolute** and points at `/media/` in development. It is a
+  plain static file — no auth header is applied by the `<audio>` element, so
+  don't assume the media path is protected.
+- **`duration` may be `null`** on any unprocessed exercise. Guard your player.
+- **`score` is `null` on reveal attempts** in `/practice/attempts/`.
+- **Segment `sequence` starts at 1**, and reorder requires the complete set.
+
+---
+
+## 9. Suggested build order
+
+1. **Auth shell** — login, register, token storage, refresh interceptor, `me`
+   bootstrap, role-based routing.
+2. **Exercise browse** — paginated list, filters, search. Read-only; proves
+   pagination and error handling.
+3. **Practice loop** — the core product: `start/` → audio player with segment
+   seeking → answer box → submit → diff rendering. Build this before any
+   creator UI; it is where the design risk is.
+4. **Progress & history** — progress bar on the practice screen, history list.
+5. **Creator: upload + status polling** — the upload form and the
+   `processing → ready|failed` state machine with retry.
+6. **Creator: segment editor** — table with inline text/timing edits,
+   drag-to-reorder, per-segment audio preview.
+7. **Creator: publish** — the precondition checklist driven by `extra.reasons`.
+
+Steps 3 and 5–7 are independent; the practice loop can be built against a
+manually-seeded exercise.
+
+## 10. Local setup
+
+```bash
+# backend
+cd backend && ../.venv/bin/python manage.py runserver     # :8000
+
+# background transcription (optional for frontend work)
+docker compose up -d redis
+cd backend && ../.venv/bin/celery -A config worker --loglevel=info
+```
+
+For frontend development you rarely need a real transcription: set
+`TRANSCRIPTION_PROVIDER=stub` in `backend/.env` and uploads produce four fixed
+segments instantly, with no API key and no network.
+
+Generate a typed client from the committed schema:
+
+```bash
+npx openapi-typescript backend/schema.yml -o src/api/schema.d.ts
+```
+
+Regenerate whenever `schema.yml` changes — it is committed and kept in sync by
+a build check, so a diff there means the contract moved.

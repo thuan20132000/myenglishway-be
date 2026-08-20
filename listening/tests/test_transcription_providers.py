@@ -201,6 +201,21 @@ def test_openai_rejects_oversized_audio_before_calling_the_api(settings):
     client.audio.transcriptions.create.assert_not_called()
 
 
+def test_openai_sends_a_bare_filename_not_a_storage_path():
+    """OpenAI infers the audio format from the filename.
+
+    FieldFile.name is a storage path ("audio/3/1b34db25.mp3"), and passing it
+    whole risks the provider failing to recognise the extension - so the
+    basename is sent explicitly alongside the file object.
+    """
+    provider, client = build_provider()
+    provider.transcribe(fake_audio(name="audio/3/1b34db25e7f04.mp3"))
+
+    sent = client.audio.transcriptions.create.call_args.kwargs["file"]
+    assert isinstance(sent, tuple)
+    assert sent[0] == "1b34db25e7f04.mp3"
+
+
 def test_openai_closes_the_file_even_on_failure():
     audio = fake_audio()
     provider, _ = build_provider(error=RuntimeError("boom"))
