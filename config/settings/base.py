@@ -92,7 +92,7 @@ TEMPLATES = [
 DATABASES = {
     "default": env.db(
         "DATABASE_URL",
-        default="postgres://localhost:5432/english_practice",
+        default="postgres://localhost:5432/english_practice2",
     )
 }
 DATABASES["default"]["ATOMIC_REQUESTS"] = False
@@ -221,6 +221,13 @@ Everything else returns a stable machine-readable code:
 | `EXERCISE_NOT_PUBLISHED` | 409 | Practice attempted on an unpublished exercise |
 | `EXERCISE_PROCESSING` | 409 | Transcription is in flight; segments are locked |
 | `TRANSCRIPT_NOT_AVAILABLE` | 409 | The segment has no transcript to score against |
+| `COLLECTION_DEPTH_EXCEEDED` | 400 | Collections nest two levels deep at most |
+| `COLLECTION_CYCLE` | 400 | The requested parent would place a collection inside itself |
+| `COLLECTION_OWNER_MISMATCH` | 400 | The parent or exercise belongs to another user |
+| `COLLECTION_HAS_CHILDREN` | 409 | A collection of collections cannot also hold exercises |
+| `COLLECTION_HAS_MEMBERS` | 409 | A collection of exercises cannot also hold collections |
+| `EXERCISE_ALREADY_IN_COLLECTION` | 409 | That exercise is already filed elsewhere |
+| `COLLECTION_ALREADY_PUBLISHED` | 409 | Publish called on a published collection |
 
 Requesting a resource the caller may not see returns **404, not 403** - a 403
 would confirm that it exists.
@@ -280,6 +287,10 @@ ALLOWED_AUDIO_CONTENT_TYPES = [
     "audio/ogg",
     "application/ogg",
 ]
+MAX_PDF_FILE_SIZE_MB = env.int("MAX_PDF_FILE_SIZE_MB", 20)
+ALLOWED_PDF_EXTENSIONS = [".pdf"]
+ALLOWED_PDF_CONTENT_TYPES = ["application/pdf", "application/x-pdf"]
+
 SUPPORTED_LANGUAGES = ["en"]
 
 # A segment counts as completed when its best submission score reaches this.

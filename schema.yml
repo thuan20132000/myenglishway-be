@@ -62,6 +62,13 @@ info:
     | `EXERCISE_NOT_PUBLISHED` | 409 | Practice attempted on an unpublished exercise |
     | `EXERCISE_PROCESSING` | 409 | Transcription is in flight; segments are locked |
     | `TRANSCRIPT_NOT_AVAILABLE` | 409 | The segment has no transcript to score against |
+    | `COLLECTION_DEPTH_EXCEEDED` | 400 | Collections nest two levels deep at most |
+    | `COLLECTION_CYCLE` | 400 | The requested parent would place a collection inside itself |
+    | `COLLECTION_OWNER_MISMATCH` | 400 | The parent or exercise belongs to another user |
+    | `COLLECTION_HAS_CHILDREN` | 409 | A collection of collections cannot also hold exercises |
+    | `COLLECTION_HAS_MEMBERS` | 409 | A collection of exercises cannot also hold collections |
+    | `EXERCISE_ALREADY_IN_COLLECTION` | 409 | That exercise is already filed elsewhere |
+    | `COLLECTION_ALREADY_PUBLISHED` | 409 | Publish called on a published collection |
 
     Requesting a resource the caller may not see returns **404, not 403** - a 403
     would confirm that it exists.
@@ -207,6 +214,521 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: ''
+  /api/v1/listening/collections/:
+    get:
+      operationId: listening_collections_list
+      description: 'Only roots are listed: a child collection is reached by opening
+        its parent. Students see published collections, creators additionally see
+        their own in any state, admins see everything.'
+      summary: List root collections visible to the caller
+      parameters:
+      - in: query
+        name: is_published
+        schema:
+          type: boolean
+      - name: ordering
+        required: false
+        in: query
+        description: Which field to use when ordering the results.
+        schema:
+          type: string
+      - in: query
+        name: owner
+        schema:
+          type: integer
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: page_size
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: search
+        required: false
+        in: query
+        description: A search term.
+        schema:
+          type: string
+      tags:
+      - listening
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCollectionListList'
+              examples:
+                OnePageOfResults:
+                  value:
+                    count: 123
+                    next: http://api.example.org/accounts/?page=4
+                    previous: http://api.example.org/accounts/?page=2
+                    results:
+                    - count: 2
+                      next: null
+                      previous: null
+                      results:
+                      - id: 3
+                        title: Cambridge IELTS 18
+                        owner:
+                          id: 3
+                          full_name: Ben Ito
+                        is_published: true
+                        position: 1
+                        child_count: 4
+                        member_count: 0
+                        created_at: '2026-08-19T09:00:00Z'
+                  summary: One page of results
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+    post:
+      operationId: listening_collections_create
+      description: Creator role required. Omit `parent` for a root (a book, or a flat
+        category); supply it to add a test to a book. Nesting stops there.
+      summary: Create a collection
+      tags:
+      - listening
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CollectionCreateRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CollectionCreateRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CollectionCreateRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CollectionDetail'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/listening/collections/{id}/:
+    get:
+      operationId: listening_collections_retrieve
+      description: '`children` holds nested collections, `members` the exercises filed
+        directly here. A collection never has both. Each list is filtered to what
+        the caller may see.'
+      summary: Retrieve one collection with its contents
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this exercise collection.
+        required: true
+      tags:
+      - listening
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CollectionDetail'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+    patch:
+      operationId: listening_collections_partial_update
+      description: Owner or admin only. `is_published` cannot be set here - use the
+        publish and unpublish actions. Setting `parent` re-files the collection; a
+        collection that has children of its own cannot be moved under a parent, because
+        its children would land three levels deep.
+      summary: Edit a collection or move it under a new parent
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this exercise collection.
+        required: true
+      tags:
+      - listening
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedCollectionUpdateRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedCollectionUpdateRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedCollectionUpdateRequest'
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CollectionDetail'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+    delete:
+      operationId: listening_collections_destroy
+      description: Owner or admin only. Child collections and memberships go with
+        it; the exercises themselves are left alone and simply become ungrouped.
+      summary: Delete a collection and its child collections
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this exercise collection.
+        required: true
+      tags:
+      - listening
+      security:
+      - jwtAuth: []
+      responses:
+        '204':
+          description: No response body
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/listening/collections/{id}/members/:
+    put:
+      operationId: listening_collections_members_update
+      description: Owner or admin only. Send every exercise that should be in the
+        collection, in display order; position is the array index plus one. Exercises
+        must be owned by the collection's owner and must not already belong to a different
+        collection. A collection that holds child collections cannot hold exercises.
+      summary: Replace the collection's member exercises
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - listening
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CollectionMembersRequest'
+            examples:
+              FourPartsInOrder:
+                value:
+                  exercise_ids:
+                  - 125
+                  - 126
+                  - 127
+                  - 128
+                summary: Four parts in order
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CollectionMembersRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CollectionMembersRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CollectionDetail'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/listening/collections/{id}/members/{exercise_id}/:
+    delete:
+      operationId: listening_collections_members_destroy
+      description: Owner or admin only. The exercise itself is untouched and becomes
+        ungrouped; the remaining members close the gap in the ordering.
+      summary: Remove one exercise from the collection
+      parameters:
+      - in: path
+        name: exercise_id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - listening
+      security:
+      - jwtAuth: []
+      responses:
+        '204':
+          description: Removed.
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/listening/collections/{id}/publish/:
+    post:
+      operationId: listening_collections_publish_create
+      description: 'Lists the folder for learners. Unlike an exercise there are no
+        preconditions - a collection holds no media to validate - and this does not
+        cascade: the exercises inside keep whatever publication state they already
+        had.'
+      summary: Publish a collection
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this exercise collection.
+        required: true
+      tags:
+      - listening
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CollectionPublication'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/listening/collections/{id}/unpublish/:
+    post:
+      operationId: listening_collections_unpublish_create
+      description: Hides the folder. Idempotent. The member exercises stay published
+        and individually practisable - this withdraws the shelf, not the material
+        on it.
+      summary: Unpublish a collection
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this exercise collection.
+        required: true
+      tags:
+      - listening
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CollectionPublication'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
   /api/v1/listening/exercises/:
     get:
       operationId: listening_exercises_list
@@ -215,6 +737,10 @@ paths:
         in list rows.
       summary: List exercises visible to the caller
       parameters:
+      - in: query
+        name: collection
+        schema:
+          type: number
       - in: query
         name: is_published
         schema:
@@ -265,6 +791,10 @@ paths:
           * `processing` - Processing
           * `ready` - Ready
           * `failed` - Failed
+      - in: query
+        name: ungrouped
+        schema:
+          type: boolean
       tags:
       - listening
       security:
@@ -342,6 +872,147 @@ paths:
                 $ref: '#/components/schemas/Error'
           description: ''
         '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/listening/exercises/{exercise_id}/answers/:
+    get:
+      operationId: listening_exercises_answers_retrieve
+      description: 'Owner or admin only, for reads as well as writes: this is the
+        solution to the question sheet. Learners read the same answers through the
+        practice API once the exercise is published.'
+      summary: Read the answer key
+      parameters:
+      - in: path
+        name: exercise_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - listening
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnswerKey'
+              examples:
+                ATen-questionKey:
+                  value:
+                    answer_key: |-
+                      11. library
+                      12. 9.30
+                      13. blue
+                    answers:
+                    - number: 11
+                      text: library
+                    - number: 12
+                      text: '9.30'
+                    - number: 13
+                      text: blue
+                  summary: A ten-question key
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+    put:
+      operationId: listening_exercises_answers_update
+      description: 'Replaces the entire key. Number every line or none of them; an
+        unnumbered list is numbered from 1 by position. Question numbers need not
+        start at 1 - a Section 2 sheet is questions 11-20. Send an empty string to
+        clear the key. Permitted while published: no segment timing depends on the
+        key.'
+      summary: Replace the answer key
+      parameters:
+      - in: path
+        name: exercise_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - listening
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnswerKeyRequest'
+            examples:
+              PastedFromAPrintedKey:
+                value:
+                  answer_key: |-
+                    11. library
+                    12. 9.30
+                    13. blue
+                summary: Pasted from a printed key
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AnswerKeyRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AnswerKeyRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnswerKey'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                UnreadableKey:
+                  value:
+                    code: INVALID_ANSWER_KEY
+                    detail: 'Number every line or none of them. This line has no number:
+                      ''blue''.'
+                    extra:
+                      line: blue
+                  summary: Unreadable key
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
           content:
             application/json:
               schema:
@@ -1211,6 +1882,70 @@ paths:
               example:
                 code: AUTHENTICATION_FAILED
                 detail: Authentication credentials were not provided.
+  /api/v1/practice/exercises/{exercise_id}/answers/:
+    get:
+      operationId: practice_exercises_answers_list
+      description: |-
+        The creator's answers, for the learner to check their sheet against. Nothing is scored - the answers are shown beside what the learner typed and the judgement is theirs.
+
+        A separate request from the worksheet so the answers are not sitting in the page payload while the learner is still working. This is a UI affordance, not a security boundary: the endpoint is open to anyone who may practise the exercise, whenever they ask.
+      summary: Read the answer key
+      parameters:
+      - in: path
+        name: exercise_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - practice
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WorksheetAnswer'
+              examples:
+                ThreeAnswers:
+                  value:
+                  - - number: 11
+                      text: library
+                    - number: 12
+                      text: '9.30'
+                    - number: 13
+                      text: blue
+                  summary: Three answers
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
   /api/v1/practice/exercises/{exercise_id}/progress/:
     get:
       operationId: practice_exercises_progress_retrieve
@@ -1436,6 +2171,7 @@ paths:
                     exercise_id: 125
                     title: Accommodation Practice
                     audio_url: http://localhost:8000/media/audio/3/9f2c.mp3
+                    pdf_url: http://localhost:8000/media/pdf/3/4b71.pdf
                     total_segments: 24
                     attempted_segments: 8
                     current_segment:
@@ -1450,10 +2186,138 @@ paths:
                     exercise_id: 125
                     title: Accommodation Practice
                     audio_url: http://localhost:8000/media/audio/3/9f2c.mp3
+                    pdf_url: http://localhost:8000/media/pdf/3/4b71.pdf
                     total_segments: 24
                     attempted_segments: 24
                     current_segment: null
                   summary: Every segment attempted
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/practice/exercises/{exercise_id}/transcript/:
+    get:
+      operationId: practice_exercises_transcript_list
+      description: |-
+        The whole transcript, in order, for a learner who wants to read along.
+
+        Unlike `reveal/`, this records nothing: worksheet mode has no notion of giving up, so looking at the transcript is not an event worth logging. The dictation endpoints keep their own text-free payloads.
+      summary: Read the full transcript
+      parameters:
+      - in: path
+        name: exercise_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - practice
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PracticeTranscriptSegment'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/practice/exercises/{exercise_id}/worksheet/:
+    get:
+      operationId: practice_exercises_worksheet_retrieve
+      description: |-
+        Everything the worksheet page needs in one request: the audio, the PDF question sheet, and which question numbers to render inputs for.
+
+        `question_numbers` lists the numbers as printed rather than a count, because a sheet may cover questions 11-20. It is empty when the creator has not written an answer key; the page is still usable as audio plus question sheet.
+      summary: Open an exercise as a worksheet
+      parameters:
+      - in: path
+        name: exercise_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - practice
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Worksheet'
+              examples:
+                ASection2Sheet:
+                  value:
+                    exercise_id: 125
+                    title: Section 2 - Museum tour
+                    audio_url: http://localhost:8000/media/audio/3/9f2c.mp3
+                    pdf_url: http://localhost:8000/media/pdf/3/4b71.pdf
+                    duration: 184.2
+                    question_numbers:
+                    - 11
+                    - 12
+                    - 13
+                    - 14
+                    - 15
+                    - 16
+                    - 17
+                    - 18
+                    - 19
+                    - 20
+                    has_transcript: true
+                  summary: A Section 2 sheet
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
           description: ''
         '404':
           content:
@@ -1724,6 +2588,42 @@ paths:
                 detail: Authentication credentials were not provided.
 components:
   schemas:
+    AnswerKey:
+      type: object
+      description: |-
+        The answer key, both as rows and as the text the creator pasted.
+
+        ``answer_key`` is the write field and round-trips on read, so an edit form
+        can load the key in the same shape it was authored rather than reassembling
+        it from rows.
+      properties:
+        answer_key:
+          type: string
+          description: 'One answer per line, optionally numbered: ''1. library''.
+            Number every line or none of them. Send an empty string to clear the key.'
+        answers:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExerciseAnswer'
+          readOnly: true
+      required:
+      - answer_key
+      - answers
+    AnswerKeyRequest:
+      type: object
+      description: |-
+        The answer key, both as rows and as the text the creator pasted.
+
+        ``answer_key`` is the write field and round-trips on read, so an edit form
+        can load the key in the same shape it was authored rather than reassembling
+        it from rows.
+      properties:
+        answer_key:
+          type: string
+          description: 'One answer per line, optionally numbered: ''1. library''.
+            Number every line or none of them. Send an empty string to clear the key.'
+      required:
+      - answer_key
     AttemptExercise:
       type: object
       properties:
@@ -1748,6 +2648,211 @@ components:
       required:
       - id
       - sequence
+    CollectionCreateRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+        parent:
+          type: integer
+          nullable: true
+          description: Omit for a root collection. The parent must be a root you own.
+        position:
+          type: integer
+          minimum: 1
+          description: 1-based position among siblings. Appended to the end if omitted.
+      required:
+      - title
+    CollectionDetail:
+      type: object
+      description: |-
+        Detail view: the folder plus one level of what is inside it.
+
+        ``children`` and ``members`` are filtered to what the caller may see, so a
+        student opening a published book gets only its published tests.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+        description:
+          type: string
+          readOnly: true
+        owner:
+          allOf:
+          - $ref: '#/components/schemas/ExerciseOwner'
+          readOnly: true
+        parent:
+          allOf:
+          - $ref: '#/components/schemas/CollectionRef'
+          nullable: true
+          readOnly: true
+        is_published:
+          type: boolean
+          readOnly: true
+        published_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        position:
+          type: integer
+          readOnly: true
+          description: 1-based display order among siblings.
+        child_count:
+          type: integer
+          readOnly: true
+        member_count:
+          type: integer
+          readOnly: true
+        children:
+          type: array
+          items:
+            $ref: '#/components/schemas/CollectionList'
+          readOnly: true
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/ListeningExerciseList'
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - child_count
+      - children
+      - created_at
+      - description
+      - id
+      - is_published
+      - member_count
+      - members
+      - owner
+      - parent
+      - position
+      - published_at
+      - title
+      - updated_at
+    CollectionList:
+      type: object
+      description: List rows. ``child_count``/``member_count`` come from queryset
+        annotations.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+        owner:
+          allOf:
+          - $ref: '#/components/schemas/ExerciseOwner'
+          readOnly: true
+        is_published:
+          type: boolean
+          readOnly: true
+        position:
+          type: integer
+          readOnly: true
+          description: 1-based display order among siblings.
+        child_count:
+          type: integer
+          readOnly: true
+        member_count:
+          type: integer
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - child_count
+      - created_at
+      - id
+      - is_published
+      - member_count
+      - owner
+      - position
+      - title
+    CollectionMembersRequest:
+      type: object
+      description: |-
+        The complete, ordered member list. Position is the index plus one.
+
+        Ordered ids rather than explicit positions: the client states the order it
+        wants and gaps or duplicate positions become unrepresentable.
+      properties:
+        exercise_ids:
+          type: array
+          items:
+            type: integer
+            minimum: 1
+          description: Every exercise in the collection, in display order.
+      required:
+      - exercise_ids
+    CollectionParent:
+      type: object
+      description: The grandparent rung of a breadcrumb - a book above a test.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+      required:
+      - id
+      - title
+    CollectionPublication:
+      type: object
+      description: Response for the publish and unpublish transitions.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        is_published:
+          type: boolean
+          readOnly: true
+        published_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+      required:
+      - id
+      - is_published
+      - published_at
+    CollectionRef:
+      type: object
+      description: Where something is filed, as a breadcrumb rather than a nested
+        tree.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+        parent:
+          allOf:
+          - $ref: '#/components/schemas/CollectionParent'
+          readOnly: true
+          nullable: true
+      required:
+      - id
+      - parent
+      - title
     Error:
       type: object
       properties:
@@ -1764,6 +2869,20 @@ components:
       required:
       - code
       - detail
+    ExerciseAnswer:
+      type: object
+      description: One entry of the answer key.
+      properties:
+        number:
+          type: integer
+          readOnly: true
+          description: The question number as printed on the sheet.
+        text:
+          type: string
+          readOnly: true
+      required:
+      - number
+      - text
     ExerciseOwner:
       type: object
       description: Compact owner reference embedded in exercise payloads.
@@ -1939,6 +3058,12 @@ components:
           format: binary
           nullable: true
           description: 'Optional at creation. Allowed: .mp3, .m4a, .wav, .ogg.'
+        pdf_file:
+          type: string
+          format: binary
+          nullable: true
+          description: Optional question sheet the learner reads while listening.
+            PDF only, up to 20 MB.
         duration:
           type: number
           format: double
@@ -1991,8 +3116,20 @@ components:
           type: string
           nullable: true
           readOnly: true
+        pdf_url:
+          type: string
+          nullable: true
+          readOnly: true
         segment_count:
           type: integer
+          readOnly: true
+        answer_count:
+          type: integer
+          readOnly: true
+        collection:
+          allOf:
+          - $ref: '#/components/schemas/CollectionRef'
+          nullable: true
           readOnly: true
         created_at:
           type: string
@@ -2003,7 +3140,9 @@ components:
           format: date-time
           readOnly: true
       required:
+      - answer_count
       - audio_url
+      - collection
       - created_at
       - description
       - duration
@@ -2011,6 +3150,7 @@ components:
       - is_published
       - language
       - owner
+      - pdf_url
       - published_at
       - segment_count
       - status
@@ -2046,16 +3186,26 @@ components:
         language:
           type: string
           readOnly: true
+        has_pdf:
+          type: boolean
+          readOnly: true
         segment_count:
           type: integer
+          readOnly: true
+        collection:
+          allOf:
+          - $ref: '#/components/schemas/CollectionRef'
+          nullable: true
           readOnly: true
         created_at:
           type: string
           format: date-time
           readOnly: true
       required:
+      - collection
       - created_at
       - duration
+      - has_pdf
       - id
       - is_published
       - language
@@ -2083,6 +3233,29 @@ components:
       required:
       - email
       - password
+    PaginatedCollectionListList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/CollectionList'
     PaginatedHistoryItemList:
       type: object
       required:
@@ -2152,6 +3325,28 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/PracticeAttempt'
+    PatchedCollectionUpdateRequest:
+      type: object
+      description: |-
+        Same fields as create; every one optional so PATCH works.
+
+        ``is_published`` is absent on purpose - publication is a transition with
+        its own endpoints, exactly as it is for exercises.
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+        parent:
+          type: integer
+          nullable: true
+          description: Omit for a root collection. The parent must be a root you own.
+        position:
+          type: integer
+          minimum: 1
+          description: 1-based position among siblings. Appended to the end if omitted.
     PatchedListeningExerciseUpdateRequest:
       type: object
       description: Update input. Replacing audio is a state transition handled by
@@ -2171,6 +3366,18 @@ components:
           type: string
           format: binary
           nullable: true
+        pdf_file:
+          type: string
+          format: binary
+          nullable: true
+          description: Optional question sheet the learner reads while listening.
+            PDF only, up to 20 MB.
+        remove_pdf:
+          type: boolean
+          writeOnly: true
+          description: Set true to detach the current PDF. Ignored when pdf_file is
+            also sent. A flag rather than pdf_file=null because these uploads are
+            multipart, which has no null.
         duration:
           type: number
           format: double
@@ -2375,6 +3582,10 @@ components:
           type: string
           readOnly: true
           nullable: true
+        pdf_url:
+          type: string
+          readOnly: true
+          nullable: true
         total_segments:
           type: integer
           readOnly: true
@@ -2391,6 +3602,7 @@ components:
       - audio_url
       - current_segment
       - exercise_id
+      - pdf_url
       - title
       - total_segments
     PracticeSubmissionRequest:
@@ -2403,6 +3615,44 @@ components:
             scores zero; null is rejected.
       required:
       - answer
+    PracticeTranscriptSegment:
+      type: object
+      description: |-
+        A transcript line, text included.
+
+        Deliberately a separate class from ``PracticeSegmentSerializer`` rather than
+        a flag on it. That serializer's guarantee is structural - it has no ``text``
+        field, so the dictation payloads cannot leak the transcript by accident -
+        and adding a conditional field would trade that guarantee for a runtime
+        check. Worksheet mode wants the transcript openly, so it gets its own shape.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        sequence:
+          type: integer
+          readOnly: true
+          description: 1-based display order within the exercise.
+        start_time:
+          type: number
+          format: double
+          readOnly: true
+          description: Seconds from the start of the audio.
+        end_time:
+          type: number
+          format: double
+          readOnly: true
+          description: Seconds from the start of the audio.
+        text:
+          type: string
+          readOnly: true
+          description: The reference transcript for this segment.
+      required:
+      - end_time
+      - id
+      - sequence
+      - start_time
+      - text
     Progress:
       type: object
       description: |-
@@ -2691,6 +3941,58 @@ components:
       - full_name
       - id
       - role
+    Worksheet:
+      type: object
+      description: Everything the worksheet page needs in one request.
+      properties:
+        exercise_id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+        audio_url:
+          type: string
+          readOnly: true
+          nullable: true
+        pdf_url:
+          type: string
+          readOnly: true
+          nullable: true
+        duration:
+          type: number
+          format: double
+          readOnly: true
+          nullable: true
+        question_numbers:
+          type: array
+          items:
+            type: integer
+          readOnly: true
+        has_transcript:
+          type: boolean
+          readOnly: true
+      required:
+      - audio_url
+      - duration
+      - exercise_id
+      - has_transcript
+      - pdf_url
+      - question_numbers
+      - title
+    WorksheetAnswer:
+      type: object
+      description: One answer from the key, fetched when the learner asks to see it.
+      properties:
+        number:
+          type: integer
+          readOnly: true
+        text:
+          type: string
+          readOnly: true
+      required:
+      - number
+      - text
   securitySchemes:
     jwtAuth:
       type: http

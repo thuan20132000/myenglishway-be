@@ -9,13 +9,19 @@ accepts.
 """
 
 from django.conf import settings
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from accounts.serializers import UserSerializer
 from common import errors
 
-from .models import ListeningExercise, TranscriptSegment
-from .validators import validate_audio_file
+from .models import (
+    ExerciseAnswer,
+    ExerciseCollection,
+    ListeningExercise,
+    TranscriptSegment,
+)
+from .validators import validate_audio_file, validate_pdf_file
 
 
 class InvalidSegmentRange(errors.DomainError):
@@ -30,15 +36,95 @@ class ExerciseOwnerSerializer(serializers.Serializer):
     full_name = serializers.CharField(read_only=True)
 
 
-class AudioUrlMixin(serializers.Serializer):
-    audio_url = serializers.SerializerMethodField()
+class CollectionParentSerializer(serializers.Serializer):
+    """The grandparent rung of a breadcrumb - a book above a test."""
 
-    def get_audio_url(self, obj) -> str | None:
-        if not obj.audio_file:
+    id = serializers.IntegerField(read_only=True)
+    title = serializers.CharField(read_only=True)
+
+
+class CollectionRefSerializer(serializers.Serializer):
+    """Where something is filed, as a breadcrumb rather than a nested tree."""
+
+    id = serializers.IntegerField(read_only=True)
+    title = serializers.CharField(read_only=True)
+    parent = CollectionParentSerializer(read_only=True, allow_null=True)
+
+
+def may_see_collection(collection, request) -> bool:
+    """Published, or the caller's own, or the caller is an admin."""
+    if collection is None:
+        return False
+    if collection.is_published:
+        return True
+    user = getattr(request, "user", None)
+    if user is None or not user.is_authenticated:
+        return False
+    return user.is_admin or collection.owner_id == user.id
+
+
+def collection_ref(collection, request) -> dict | None:
+    """A breadcrumb with every rung the caller may not see removed.
+
+    Each rung is checked separately: a published test inside a withdrawn book
+    stays visible, but naming the book in its breadcrumb would leak a title the
+    caller cannot otherwise reach.
+    """
+    if not may_see_collection(collection, request):
+        return None
+
+    parent = collection.parent
+    return {
+        "id": collection.id,
+        "title": collection.title,
+        "parent": (
+            {"id": parent.id, "title": parent.title}
+            if may_see_collection(parent, request)
+            else None
+        ),
+    }
+
+
+class ExerciseCollectionRefMixin(serializers.Serializer):
+    """Adds the visibility-filtered ``collection`` breadcrumb to an exercise.
+
+    Null when the exercise is ungrouped, and also when the collection exists
+    but the caller may not see it - a published exercise inside a draft book
+    must not leak the book's title.
+    """
+
+    collection = serializers.SerializerMethodField()
+
+    @extend_schema_field(CollectionRefSerializer(allow_null=True))
+    def get_collection(self, instance):
+        membership = getattr(instance, "membership", None)
+        if membership is None:
             return None
-        url = obj.audio_file.url
+        return collection_ref(membership.collection, self.context.get("request"))
+
+
+class ExerciseMediaUrlMixin(serializers.Serializer):
+    """Absolute URLs for the exercise's uploaded files.
+
+    Both are plain media URLs carrying no authorisation: whoever can see the
+    exercise can fetch them.
+    """
+
+    audio_url = serializers.SerializerMethodField()
+    pdf_url = serializers.SerializerMethodField()
+
+    def _absolute_media_url(self, file_field) -> str | None:
+        if not file_field:
+            return None
+        url = file_field.url
         request = self.context.get("request")
         return request.build_absolute_uri(url) if request else url
+
+    def get_audio_url(self, obj) -> str | None:
+        return self._absolute_media_url(obj.audio_file)
+
+    def get_pdf_url(self, obj) -> str | None:
+        return self._absolute_media_url(obj.pdf_file)
 
 
 # --------------------------------------------------------------------------
@@ -106,11 +192,14 @@ class TranscriptSegmentCreatorSerializer(serializers.ModelSerializer):
 # --------------------------------------------------------------------------
 
 
-class ListeningExerciseListSerializer(serializers.ModelSerializer):
+class ListeningExerciseListSerializer(ExerciseCollectionRefMixin, serializers.ModelSerializer):
     """List rows. Deliberately excludes description and segments."""
 
     owner = ExerciseOwnerSerializer(read_only=True)
     segment_count = serializers.IntegerField(read_only=True)
+    #: Backed by the model property, so a row can show a "has handout" badge
+    #: without the client fetching the detail payload.
+    has_pdf = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = ListeningExercise
@@ -122,17 +211,22 @@ class ListeningExerciseListSerializer(serializers.ModelSerializer):
             "is_published",
             "duration",
             "language",
+            "has_pdf",
             "segment_count",
+            "collection",
             "created_at",
         ]
         read_only_fields = fields
 
 
-class ListeningExerciseDetailSerializer(AudioUrlMixin, serializers.ModelSerializer):
+class ListeningExerciseDetailSerializer(
+    ExerciseCollectionRefMixin, ExerciseMediaUrlMixin, serializers.ModelSerializer
+):
     """Detail view. ``segments`` is present only for the owner or an admin."""
 
     owner = ExerciseOwnerSerializer(read_only=True)
     segment_count = serializers.IntegerField(read_only=True)
+    answer_count = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = ListeningExercise
@@ -147,7 +241,10 @@ class ListeningExerciseDetailSerializer(AudioUrlMixin, serializers.ModelSerializ
             "duration",
             "language",
             "audio_url",
+            "pdf_url",
             "segment_count",
+            "answer_count",
+            "collection",
             "created_at",
             "updated_at",
         ]
@@ -196,6 +293,16 @@ class ListeningExerciseCreateSerializer(serializers.ModelSerializer):
         ),
     )
 
+    pdf_file = serializers.FileField(
+        required=False,
+        allow_null=True,
+        validators=[validate_pdf_file],
+        help_text=(
+            "Optional question sheet the learner reads while listening. "
+            f"PDF only, up to {settings.MAX_PDF_FILE_SIZE_MB} MB."
+        ),
+    )
+
     duration = serializers.FloatField(
         required=False,
         allow_null=True,
@@ -209,7 +316,7 @@ class ListeningExerciseCreateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ListeningExercise
-        fields = ["title", "description", "language", "audio_file", "duration"]
+        fields = ["title", "description", "language", "audio_file", "pdf_file", "duration"]
 
     def validate_title(self, value: str) -> str:
         value = (value or "").strip()
@@ -233,6 +340,26 @@ class ListeningExerciseUpdateSerializer(serializers.ModelSerializer):
         required=False, allow_null=True, validators=[validate_audio_file]
     )
 
+    pdf_file = serializers.FileField(
+        required=False,
+        allow_null=True,
+        validators=[validate_pdf_file],
+        help_text=(
+            "Optional question sheet the learner reads while listening. "
+            f"PDF only, up to {settings.MAX_PDF_FILE_SIZE_MB} MB."
+        ),
+    )
+
+    remove_pdf = serializers.BooleanField(
+        required=False,
+        write_only=True,
+        help_text=(
+            "Set true to detach the current PDF. Ignored when pdf_file is also "
+            "sent. A flag rather than pdf_file=null because these uploads are "
+            "multipart, which has no null."
+        ),
+    )
+
     duration = serializers.FloatField(
         required=False,
         allow_null=True,
@@ -246,10 +373,47 @@ class ListeningExerciseUpdateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ListeningExercise
-        fields = ["title", "description", "language", "audio_file", "duration"]
+        fields = [
+            "title",
+            "description",
+            "language",
+            "audio_file",
+            "pdf_file",
+            "remove_pdf",
+            "duration",
+        ]
 
     validate_title = ListeningExerciseCreateSerializer.validate_title
     validate_language = ListeningExerciseCreateSerializer.validate_language
+
+
+class ExerciseAnswerSerializer(serializers.ModelSerializer):
+    """One entry of the answer key."""
+
+    class Meta:
+        model = ExerciseAnswer
+        fields = ["number", "text"]
+        read_only_fields = fields
+
+
+class AnswerKeySerializer(serializers.Serializer):
+    """The answer key, both as rows and as the text the creator pasted.
+
+    ``answer_key`` is the write field and round-trips on read, so an edit form
+    can load the key in the same shape it was authored rather than reassembling
+    it from rows.
+    """
+
+    answer_key = serializers.CharField(
+        allow_blank=True,
+        trim_whitespace=False,
+        style={"base_template": "textarea.html"},
+        help_text=(
+            "One answer per line, optionally numbered: '1. library'. Number "
+            "every line or none of them. Send an empty string to clear the key."
+        ),
+    )
+    answers = ExerciseAnswerSerializer(many=True, read_only=True)
 
 
 class SegmentReorderItemSerializer(serializers.Serializer):
@@ -319,3 +483,164 @@ class ExerciseStatusSerializer(serializers.ModelSerializer):
             "transcription_provider",
         ]
         read_only_fields = fields
+
+
+# --------------------------------------------------------------------------
+# Collections - read
+# --------------------------------------------------------------------------
+
+
+class CollectionListSerializer(serializers.ModelSerializer):
+    """List rows. ``child_count``/``member_count`` come from queryset annotations."""
+
+    owner = ExerciseOwnerSerializer(read_only=True)
+    child_count = serializers.IntegerField(read_only=True)
+    member_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = ExerciseCollection
+        fields = [
+            "id",
+            "title",
+            "owner",
+            "is_published",
+            "position",
+            "child_count",
+            "member_count",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+
+class CollectionDetailSerializer(serializers.ModelSerializer):
+    """Detail view: the folder plus one level of what is inside it.
+
+    ``children`` and ``members`` are filtered to what the caller may see, so a
+    student opening a published book gets only its published tests.
+    """
+
+    owner = ExerciseOwnerSerializer(read_only=True)
+    parent = serializers.SerializerMethodField()
+    child_count = serializers.IntegerField(read_only=True)
+    member_count = serializers.IntegerField(read_only=True)
+    children = serializers.SerializerMethodField()
+    members = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ExerciseCollection
+        fields = [
+            "id",
+            "title",
+            "description",
+            "owner",
+            "parent",
+            "is_published",
+            "published_at",
+            "position",
+            "child_count",
+            "member_count",
+            "children",
+            "members",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+    @extend_schema_field(CollectionRefSerializer(allow_null=True))
+    def get_parent(self, instance):
+        return collection_ref(instance.parent, self.context.get("request"))
+
+    @extend_schema_field(CollectionListSerializer(many=True))
+    def get_children(self, instance):
+        return CollectionListSerializer(
+            self._visible(instance.children.all()), many=True, context=self.context
+        ).data
+
+    @extend_schema_field(ListeningExerciseListSerializer(many=True))
+    def get_members(self, instance):
+        exercises = [
+            membership.exercise for membership in instance.memberships.all()
+        ]
+        return ListeningExerciseListSerializer(
+            self._visible(exercises), many=True, context=self.context
+        ).data
+
+    def _visible(self, items):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if user is not None and user.is_authenticated and user.is_admin:
+            return list(items)
+        owner_id = getattr(user, "id", None)
+        return [
+            item
+            for item in items
+            if item.is_published or (owner_id is not None and item.owner_id == owner_id)
+        ]
+
+
+class CollectionPublicationSerializer(serializers.ModelSerializer):
+    """Response for the publish and unpublish transitions."""
+
+    class Meta:
+        model = ExerciseCollection
+        fields = ["id", "is_published", "published_at"]
+        read_only_fields = fields
+
+
+# --------------------------------------------------------------------------
+# Collections - write
+# --------------------------------------------------------------------------
+
+
+class CollectionCreateSerializer(serializers.ModelSerializer):
+    parent = serializers.PrimaryKeyRelatedField(
+        queryset=ExerciseCollection.objects.all(),
+        required=False,
+        allow_null=True,
+        help_text="Omit for a root collection. The parent must be a root you own.",
+    )
+    position = serializers.IntegerField(
+        required=False,
+        min_value=1,
+        help_text="1-based position among siblings. Appended to the end if omitted.",
+    )
+
+    class Meta:
+        model = ExerciseCollection
+        fields = ["title", "description", "parent", "position"]
+
+    def validate_title(self, value: str) -> str:
+        title = value.strip()
+        if not title:
+            raise serializers.ValidationError("This field may not be blank.")
+        return title
+
+
+class CollectionUpdateSerializer(CollectionCreateSerializer):
+    """Same fields as create; every one optional so PATCH works.
+
+    ``is_published`` is absent on purpose - publication is a transition with
+    its own endpoints, exactly as it is for exercises.
+    """
+
+    class Meta(CollectionCreateSerializer.Meta):
+        extra_kwargs = {"title": {"required": False}}
+
+
+class CollectionMembersSerializer(serializers.Serializer):
+    """The complete, ordered member list. Position is the index plus one.
+
+    Ordered ids rather than explicit positions: the client states the order it
+    wants and gaps or duplicate positions become unrepresentable.
+    """
+
+    exercise_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        allow_empty=True,
+        help_text="Every exercise in the collection, in display order.",
+    )
+
+    def validate_exercise_ids(self, value):
+        if len(set(value)) != len(value):
+            raise serializers.ValidationError("Each exercise may appear only once.")
+        return value

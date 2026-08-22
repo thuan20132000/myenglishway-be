@@ -57,6 +57,17 @@ def test_audio_upload_path_is_namespaced_by_owner():
     assert exercise.has_audio
 
 
+def test_pdf_upload_path_is_namespaced_by_owner():
+    exercise = ExerciseFactory(with_pdf=True)
+    assert exercise.pdf_file.name.startswith(f"pdf/{exercise.owner_id}/")
+    assert exercise.pdf_file.name.endswith(".pdf")
+    assert exercise.has_pdf
+
+
+def test_exercise_without_pdf_reports_no_pdf():
+    assert ExerciseFactory().has_pdf is False
+
+
 def test_deleting_exercise_cascades_to_segments():
     exercise = ExerciseFactory()
     SegmentFactory(exercise=exercise, sequence=1)

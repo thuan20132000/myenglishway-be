@@ -118,8 +118,16 @@ title=Accommodation Practice     (required)
 description=IELTS Section 1      (optional)
 language=en                      (optional, default "en")
 audio_file=<File>                (optional; .mp3 .m4a .wav .ogg)
+pdf_file=<File>                  (optional; .pdf, max 20 MB)
 duration=184.2                   (optional; set automatically by transcription)
 ```
+
+`pdf_file` is the question sheet the learner reads while listening. It is
+optional and purely presentational — it does not affect `status` and is not a
+publish precondition. To swap it later, `PATCH` a new `pdf_file`; to detach it,
+`PATCH remove_pdf=true` (a flag rather than `pdf_file=null`, because multipart
+has no null). Unlike the audio, **the PDF may be replaced while the exercise is
+published** — the segment timings are untouched.
 
 Returns `201` with the detail shape. `status` will be `"uploaded"` when audio
 was included, `"draft"` when it wasn't.
@@ -201,7 +209,35 @@ Two behaviours to surface in the UI:
 - **Correcting text does not change past scores** — learners' attempts keep a
   snapshot of the transcript as it read when they answered.
 
-### 5.4 Publish
+### 5.4 The answer key
+
+`GET` / `PUT /listening/exercises/{id}/answers/` — **owner or admin only, for
+reads as well as writes.** This is the solution to the question sheet; learners
+read the same answers through the practice API instead (§6.7).
+
+```json
+PUT { "answer_key": "11. library\n12. 9.30\n13. blue" }
+→   { "answer_key": "11. library\n12. 9.30\n13. blue",
+      "answers": [ {"number": 11, "text": "library"}, … ] }
+```
+
+The key is pasted the way it is printed, one answer per line. Rules:
+
+- **Number every line or none of them.** An unnumbered list is numbered from 1
+  by position. A half-numbered list is rejected with `INVALID_ANSWER_KEY` and
+  the offending line in `extra.line` — it is a typo, not a request to renumber.
+- Separators `.` `)` `-` `:` all work, and **a space after the separator is
+  required**. That is what stops the unnumbered answer `9.30` (an ordinary
+  time) from parsing as question 9 answered "30".
+- **Numbers need not start at 1 or be contiguous** — a Section 2 sheet is
+  questions 11–20.
+- `PUT` replaces the **whole** key. An empty string clears it.
+- Permitted while published: no segment timing depends on the key.
+
+The key is optional. `answer_count` on the exercise detail says how many
+answers exist.
+
+### 5.5 Publish
 
 `POST /listening/exercises/{id}/publish/` → `200` with
 `{id, status, is_published, published_at}`.
@@ -233,6 +269,12 @@ two actions.
 
 ## 6. Learner flow
 
+There are two ways to practise the same exercise. **Worksheet mode** (§6.7) is
+the paper workflow: question sheet open, audio playing straight through, fill in
+an answer column, then read the key. **Dictation mode** (§6.2–6.6) is the
+segment-by-segment transcription drill with server-side scoring. They share
+nothing but the exercise.
+
 ### 6.1 Browse
 
 `GET /listening/exercises/` — **paginated** (`{count, next, previous, results}`),
@@ -248,7 +290,9 @@ List rows carry **no** `description` and **no** `segments` — they are for card
 { "id": 125, "title": "Accommodation Practice",
   "owner": {"id": 3, "full_name": "Ben Ito"},
   "status": "ready", "is_published": true, "duration": 184.2,
-  "language": "en", "segment_count": 24, "created_at": "..." }
+  "language": "en", "audio_url": "http://localhost:8000/media/audio/3/9f2c.mp3",
+  "pdf_url": "http://localhost:8000/media/pdf/3/4b71.pdf",
+  "segment_count": 24, "created_at": "..." }
 ```
 
 ### 6.2 Start / resume
@@ -259,6 +303,7 @@ session is created).
 ```json
 { "exercise_id": 125, "title": "Accommodation Practice",
   "audio_url": "http://localhost:8000/media/audio/3/9f2c.mp3",
+  "pdf_url": "http://localhost:8000/media/pdf/3/4b71.pdf",
   "total_segments": 24, "attempted_segments": 8,
   "current_segment": { "id": 501, "sequence": 9, "start_time": 32.5,
                        "end_time": 38.9, "word_count": 11 } }
@@ -305,6 +350,26 @@ to a quarter second. If that's too loose, drive it with
 `requestAnimationFrame` instead. Dictation UIs normally offer replay,
 half-speed (`audio.playbackRate = 0.75`) and a repeat count — all client-side,
 no API involvement.
+
+**The handout pane.** When `pdf_url` is non-null, the practice screen is a
+two-pane layout: the question sheet beside the player and answer box, the way a
+learner works from a printed paper. Rules the layout has to respect:
+
+- The PDF pane **scrolls and zooms independently of playback**. Nothing about
+  the audio may move it, and paging through the document must never pause or
+  seek the audio. There is no page↔segment mapping in the API — do not invent
+  one.
+- Audio controls must **never wait on the PDF**. Render the player immediately
+  and let the document stream in beside it; a slow or failed PDF leaves a fully
+  working dictation exercise.
+- When `pdf_url` is `null`, drop the pane entirely and give the player the full
+  width — most exercises will have no handout.
+- Render with `react-pdf` / `pdfjs-dist`, and fall back to
+  `<a href={pdf_url} target="_blank" rel="noopener">Open the question sheet</a>`
+  when the viewer fails. On narrow screens, prefer a tab toggle between sheet
+  and player over a cramped split.
+- `pdf_url`, like `audio_url`, is a **plain unauthenticated `/media/` URL** — no
+  `Authorization` header is applied, so don't fetch it through your API client.
 
 **Submit.**
 
@@ -420,6 +485,53 @@ addressable.
 
 ---
 
+### 6.7 Worksheet mode
+
+Three GETs, none of which record anything. All are gated by the same rule as the
+rest of practice: published, `ready`, or you own it.
+
+**`GET /practice/exercises/{id}/worksheet/`** — everything the page needs:
+
+```json
+{ "exercise_id": 125, "title": "Section 2 — Museum tour",
+  "audio_url": "http://localhost:8000/media/audio/3/9f2c.mp3",
+  "pdf_url": "http://localhost:8000/media/pdf/3/4b71.pdf",
+  "duration": 184.2,
+  "question_numbers": [11,12,13,14,15,16,17,18,19,20],
+  "has_transcript": true }
+```
+
+`question_numbers` lists the numbers **as printed**, not a count — render one
+input per entry, labelled with that number. Empty when the creator wrote no
+key; the page is still usable as question sheet plus player.
+
+**`GET /practice/exercises/{id}/answers/`** →
+`[{"number": 11, "text": "library"}, …]`, or `[]` when there is no key.
+
+A separate request so the answers are not sitting in the page payload while the
+learner is still working. Fetch it when they ask to see the key. It is **not**
+gated on the audio having finished — that rule is a UI affordance, and the
+endpoint answers whenever it is asked.
+
+Show the correct answer **beside** what the learner typed, and do not mark it
+right or wrong. "library" against "the library" is a judgement a string compare
+gets wrong and a person gets right instantly.
+
+**`GET /practice/exercises/{id}/transcript/`** →
+`[{"id", "sequence", "start_time", "end_time", "text"}, …]`, ordered. `409
+TRANSCRIPT_NOT_AVAILABLE` when the exercise has no segments.
+
+Unlike `reveal/` (§6.5), **this records nothing** — worksheet mode has no notion
+of giving up, so reading along is not an event worth logging. Each line carries
+its `start_time`, so clicking one can seek the player.
+
+### Suggested layout
+
+PDF pane on the left, sticky and full height. Answer inputs on the right, in a
+column that scrolls. Keep the player **pinned** — a −10s button that scrolls out
+of reach defeats the whole workflow. Below a tablet width, make the two panes a
+tab toggle rather than a cramped split.
+
 ## 7. Errors
 
 Two shapes. **Field validation** keeps a key per field:
@@ -444,6 +556,8 @@ Branch on `code`, never on `detail` — the prose may change.
 | `PERMISSION_DENIED` | 403 | "You don't have access" |
 | `NOT_FOUND` | 404 | Not-found page |
 | `INVALID_AUDIO_FILE` / `AUDIO_FILE_TOO_LARGE` | 400 | Upload field error |
+| `INVALID_PDF_FILE` / `PDF_FILE_TOO_LARGE` | 400 | Upload field error on `pdf_file` |
+| `INVALID_ANSWER_KEY` | 400 | Highlight the line in `extra.line`, or the question in `extra.number` |
 | `INVALID_SEGMENT_RANGE` | 400 | Highlight the field in `extra.field` |
 | `SEGMENT_OUTSIDE_AUDIO` | 400 | "Segment ends after the audio does" |
 | `DUPLICATE_SEGMENT_SEQUENCE` | 400 | "Position already taken" |
@@ -482,9 +596,12 @@ say not found.
   For a student the keys are **absent**, not null — use presence checks.
 - **Uploads are multipart, everything else is JSON.** Don't set
   `Content-Type` manually on multipart requests; let the browser add the boundary.
-- **`audio_url` is absolute** and points at `/media/` in development. It is a
-  plain static file — no auth header is applied by the `<audio>` element, so
-  don't assume the media path is protected.
+- **`audio_url` and `pdf_url` are absolute** and point at `/media/` in
+  development. They are plain static files — no auth header is applied by the
+  `<audio>` element or the PDF viewer, so don't assume the media path is
+  protected.
+- **`pdf_url` is `null` on most exercises.** List rows carry `has_pdf` so you
+  can badge them without a detail fetch.
 - **`duration` may be `null`** on any unprocessed exercise. Guard your player.
 - **`score` is `null` on reveal attempts** in `/practice/attempts/`.
 - **Segment `sequence` starts at 1**, and reorder requires the complete set.

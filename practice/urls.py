@@ -9,6 +9,9 @@ from .views import (
     RevealSegmentView,
     StartPracticeView,
     SubmitAnswerView,
+    WorksheetAnswersView,
+    WorksheetTranscriptView,
+    WorksheetView,
 )
 
 urlpatterns = [
@@ -31,6 +34,21 @@ urlpatterns = [
         "exercises/<int:exercise_id>/progress/",
         ExerciseProgressView.as_view(),
         name="practice-progress",
+    ),
+    path(
+        "exercises/<int:exercise_id>/worksheet/",
+        WorksheetView.as_view(),
+        name="practice-worksheet",
+    ),
+    path(
+        "exercises/<int:exercise_id>/answers/",
+        WorksheetAnswersView.as_view(),
+        name="practice-answers",
+    ),
+    path(
+        "exercises/<int:exercise_id>/transcript/",
+        WorksheetTranscriptView.as_view(),
+        name="practice-transcript",
     ),
     path("history/", PracticeHistoryView.as_view(), name="practice-history"),
     path("attempts/", PracticeAttemptListView.as_view(), name="practice-attempts"),

@@ -86,9 +86,58 @@ class PracticeStartSerializer(serializers.Serializer):
     exercise_id = serializers.IntegerField(read_only=True)
     title = serializers.CharField(read_only=True)
     audio_url = serializers.CharField(read_only=True, allow_null=True)
+    pdf_url = serializers.CharField(read_only=True, allow_null=True)
     total_segments = serializers.IntegerField(read_only=True)
     attempted_segments = serializers.IntegerField(read_only=True)
     current_segment = PracticeSegmentSerializer(read_only=True, allow_null=True)
+
+
+# --------------------------------------------------------------------------
+# Worksheet mode
+#
+# The other way to practise the same exercise: play the audio straight through
+# with the PDF question sheet open, fill in an answer column, then read the key.
+# Nothing here is scored and nothing records an attempt.
+# --------------------------------------------------------------------------
+
+
+class WorksheetSerializer(serializers.Serializer):
+    """Everything the worksheet page needs in one request."""
+
+    exercise_id = serializers.IntegerField(read_only=True)
+    title = serializers.CharField(read_only=True)
+    audio_url = serializers.CharField(read_only=True, allow_null=True)
+    pdf_url = serializers.CharField(read_only=True, allow_null=True)
+    duration = serializers.FloatField(read_only=True, allow_null=True)
+    #: The printed question numbers, not a count: a Section 2 sheet is
+    #: questions 11-20, and the inputs must carry the numbers on the paper.
+    question_numbers = serializers.ListField(
+        child=serializers.IntegerField(), read_only=True
+    )
+    has_transcript = serializers.BooleanField(read_only=True)
+
+
+class WorksheetAnswerSerializer(serializers.Serializer):
+    """One answer from the key, fetched when the learner asks to see it."""
+
+    number = serializers.IntegerField(read_only=True)
+    text = serializers.CharField(read_only=True)
+
+
+class PracticeTranscriptSegmentSerializer(serializers.ModelSerializer):
+    """A transcript line, text included.
+
+    Deliberately a separate class from ``PracticeSegmentSerializer`` rather than
+    a flag on it. That serializer's guarantee is structural - it has no ``text``
+    field, so the dictation payloads cannot leak the transcript by accident -
+    and adding a conditional field would trade that guarantee for a runtime
+    check. Worksheet mode wants the transcript openly, so it gets its own shape.
+    """
+
+    class Meta:
+        model = TranscriptSegment
+        fields = ["id", "sequence", "start_time", "end_time", "text"]
+        read_only_fields = fields
 
 
 class RevealSerializer(serializers.Serializer):

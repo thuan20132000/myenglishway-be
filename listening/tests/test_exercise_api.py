@@ -18,6 +18,12 @@ def audio_upload(name="lesson.mp3", content=b"fake-audio-bytes", content_type="a
     return SimpleUploadedFile(name, content, content_type=content_type)
 
 
+def pdf_upload(name="questions.pdf", content=b"%PDF-1.4 fake", content_type="application/pdf"):
+    # The default content must start with the PDF header: the validator checks
+    # the real bytes, not just the extension.
+    return SimpleUploadedFile(name, content, content_type=content_type)
+
+
 # ------------------------------------------------------------ authentication
 
 
@@ -377,6 +383,142 @@ def test_non_owner_cannot_delete(auth_client, creator):
 def test_creator_cannot_delete_invisible_draft(auth_client, creator):
     exercise = ExerciseFactory(owner=CreatorFactory())
     assert auth_client(creator).delete(detail_url(exercise.id)).status_code == 404
+
+
+# ----------------------------------------------------------------- pdf upload
+
+
+def test_creator_can_attach_pdf_alongside_audio(auth_client, creator, tmp_path, settings):
+    settings.MEDIA_ROOT = tmp_path
+
+    response = auth_client(creator).post(
+        LIST_URL,
+        {
+            "title": "Section 1 with handout",
+            "audio_file": audio_upload(),
+            "pdf_file": pdf_upload(),
+        },
+        format="multipart",
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["pdf_url"].endswith(".pdf")
+    # The PDF is a handout, not a source of derived state: status still comes
+    # from the audio alone.
+    assert body["status"] == ExerciseStatus.UPLOADED
+
+    exercise = ListeningExercise.objects.get(pk=body["id"])
+    assert exercise.pdf_file.name.startswith(f"pdf/{creator.id}/")
+
+
+def test_pdf_is_optional(auth_client, creator, tmp_path, settings):
+    settings.MEDIA_ROOT = tmp_path
+
+    response = auth_client(creator).post(
+        LIST_URL, {"title": "No handout", "audio_file": audio_upload()}, format="multipart"
+    )
+
+    assert response.status_code == 201
+    assert response.json()["pdf_url"] is None
+
+
+def test_list_reports_whether_an_exercise_has_a_pdf(auth_client, creator, tmp_path, settings):
+    settings.MEDIA_ROOT = tmp_path
+    ExerciseFactory(owner=creator, with_pdf=True)
+    ExerciseFactory(owner=creator)
+
+    response = auth_client(creator).get(LIST_URL)
+
+    assert response.status_code == 200
+    assert sorted(row["has_pdf"] for row in response.json()["results"]) == [False, True]
+
+
+def test_rejects_non_pdf_extension(auth_client, creator, tmp_path, settings):
+    settings.MEDIA_ROOT = tmp_path
+
+    response = auth_client(creator).post(
+        LIST_URL,
+        {"title": "Bad handout", "pdf_file": pdf_upload("notes.docx", content_type=None)},
+        format="multipart",
+    )
+
+    assert response.status_code == 400
+    assert "pdf_file" in response.json()
+
+
+def test_rejects_a_pdf_named_file_that_is_not_a_pdf(auth_client, creator, tmp_path, settings):
+    settings.MEDIA_ROOT = tmp_path
+
+    response = auth_client(creator).post(
+        LIST_URL,
+        {"title": "Disguised", "pdf_file": pdf_upload(content=b"hello, not a pdf")},
+        format="multipart",
+    )
+
+    assert response.status_code == 400
+    assert "pdf_file" in response.json()
+
+
+def test_rejects_oversized_pdf(auth_client, creator, tmp_path, settings):
+    settings.MEDIA_ROOT = tmp_path
+    settings.MAX_PDF_FILE_SIZE_MB = 1
+
+    response = auth_client(creator).post(
+        LIST_URL,
+        {
+            "title": "Huge handout",
+            "pdf_file": pdf_upload(content=b"%PDF-" + b"x" * (2 * 1024 * 1024)),
+        },
+        format="multipart",
+    )
+
+    assert response.status_code == 400
+    assert "too large" in str(response.json()["pdf_file"])
+
+
+def test_replacing_pdf_leaves_derived_state_alone(auth_client, creator, tmp_path, settings):
+    settings.MEDIA_ROOT = tmp_path
+    exercise = ExerciseFactory(owner=creator, ready=True, with_pdf=True)
+    old_name = exercise.pdf_file.name
+
+    response = auth_client(creator).patch(
+        detail_url(exercise.id), {"pdf_file": pdf_upload("v2.pdf")}, format="multipart"
+    )
+
+    assert response.status_code == 200
+    exercise.refresh_from_db()
+    assert exercise.pdf_file.name != old_name
+    assert exercise.status == ExerciseStatus.READY
+    assert exercise.duration == 184.2
+
+
+def test_pdf_can_be_replaced_while_published(auth_client, creator, tmp_path, settings):
+    """Unlike the audio, which would desynchronise the segment timings."""
+    settings.MEDIA_ROOT = tmp_path
+    exercise = ExerciseFactory(owner=creator, published=True, with_pdf=True)
+
+    response = auth_client(creator).patch(
+        detail_url(exercise.id), {"pdf_file": pdf_upload("v2.pdf")}, format="multipart"
+    )
+
+    assert response.status_code == 200
+    exercise.refresh_from_db()
+    assert exercise.is_published is True
+
+
+def test_owner_can_remove_the_pdf(auth_client, creator, tmp_path, settings):
+    settings.MEDIA_ROOT = tmp_path
+    exercise = ExerciseFactory(owner=creator, ready=True, with_pdf=True)
+
+    response = auth_client(creator).patch(
+        detail_url(exercise.id), {"remove_pdf": True}, format="multipart"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["pdf_url"] is None
+    exercise.refresh_from_db()
+    assert not exercise.pdf_file
 
 
 # -------------------------------------------------------- query optimization

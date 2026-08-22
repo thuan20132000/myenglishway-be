@@ -64,3 +64,75 @@ def _validate_size(uploaded_file):
             "The uploaded audio file is empty.",
             code=errors.INVALID_AUDIO_FILE,
         )
+
+
+def validate_pdf_file(uploaded_file):
+    """Validate an uploaded PDF handout the same way audio is validated.
+
+    Returns the file unchanged so it can be used directly as a serializer
+    field validator.
+    """
+    if uploaded_file in (None, ""):
+        return uploaded_file
+
+    _validate_pdf_extension(uploaded_file)
+    _validate_pdf_content_type(uploaded_file)
+    _validate_pdf_size(uploaded_file)
+    _validate_pdf_magic_bytes(uploaded_file)
+    return uploaded_file
+
+
+def _validate_pdf_extension(uploaded_file):
+    extension = Path(uploaded_file.name or "").suffix.lower()
+    allowed = settings.ALLOWED_PDF_EXTENSIONS
+    if extension not in allowed:
+        raise serializers.ValidationError(
+            f"Unsupported document format '{extension or 'unknown'}'. "
+            f"Allowed formats: {', '.join(allowed)}.",
+            code=errors.INVALID_PDF_FILE,
+        )
+
+
+def _validate_pdf_content_type(uploaded_file):
+    content_type = getattr(uploaded_file, "content_type", None)
+    # As with audio: only a defence-in-depth check, since clients control this
+    # header and some do not send one at all.
+    if content_type and content_type not in settings.ALLOWED_PDF_CONTENT_TYPES:
+        raise serializers.ValidationError(
+            f"Unsupported content type '{content_type}'.",
+            code=errors.INVALID_PDF_FILE,
+        )
+
+
+def _validate_pdf_size(uploaded_file):
+    max_bytes = settings.MAX_PDF_FILE_SIZE_MB * 1024 * 1024
+    size = getattr(uploaded_file, "size", 0) or 0
+    if size > max_bytes:
+        raise serializers.ValidationError(
+            f"PDF file is too large ({size / 1024 / 1024:.1f} MB). "
+            f"Maximum size is {settings.MAX_PDF_FILE_SIZE_MB} MB.",
+            code=errors.PDF_FILE_TOO_LARGE,
+        )
+    if size == 0:
+        raise serializers.ValidationError(
+            "The uploaded PDF file is empty.",
+            code=errors.INVALID_PDF_FILE,
+        )
+
+
+def _validate_pdf_magic_bytes(uploaded_file):
+    """Check the file really starts with the PDF header.
+
+    No audio equivalent, and worth the few lines here: both the extension and
+    the content type come from the client, and this file is served back to
+    browsers from our own origin. Rewinds afterwards so the storage backend
+    still writes the whole file.
+    """
+    uploaded_file.seek(0)
+    header = uploaded_file.read(5)
+    uploaded_file.seek(0)
+    if header != b"%PDF-":
+        raise serializers.ValidationError(
+            "That file is not a PDF.",
+            code=errors.INVALID_PDF_FILE,
+        )

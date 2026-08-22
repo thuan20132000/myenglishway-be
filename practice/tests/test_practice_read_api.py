@@ -123,6 +123,17 @@ def test_start_returns_the_first_segment_for_a_new_learner(
     assert body["attempted_segments"] == 0
     assert body["current_segment"]["sequence"] == 1
     assert body["audio_url"].endswith(".mp3")
+    # This exercise has no handout attached.
+    assert body["pdf_url"] is None
+
+
+def test_start_returns_the_pdf_handout_when_one_is_attached(auth_client, student):
+    exercise = ExerciseFactory(published=True, with_pdf=True)
+    SegmentFactory(exercise=exercise, sequence=1, start_time=0.0, end_time=8.0)
+
+    body = auth_client(student).post(start_url(exercise.id)).json()
+
+    assert body["pdf_url"].endswith(".pdf")
 
 
 def test_start_resumes_after_previous_attempts(auth_client, student, published_exercise):

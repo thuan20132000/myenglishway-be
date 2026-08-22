@@ -26,15 +26,43 @@ class IsExerciseOwnerOrAdmin(BasePermission):
         return exercise.owner_id
 
 
-class IsSegmentOwnerOrAdmin(IsExerciseOwnerOrAdmin):
-    """Segment access follows its exercise's owner, for reads as well.
+class IsExerciseSolutionOwnerOrAdmin(IsExerciseOwnerOrAdmin):
+    """Owner-only for reads as well as writes.
 
-    Unlike exercises, segment payloads contain the transcript, so even safe
-    methods are owner-only.
+    The base class lets any caller read, because an exercise payload is safe to
+    show. Payloads that give away the solution - the transcript, the answer key
+    - are not, so reading them is restricted to the owner too.
     """
-
-    message = "You do not have permission to view or modify this transcript."
 
     def has_object_permission(self, request, view, obj):
         user = request.user
         return user.is_admin or self._owner_id(obj) == user.id
+
+
+class IsSegmentOwnerOrAdmin(IsExerciseSolutionOwnerOrAdmin):
+    """Segment access follows its exercise's owner: payloads contain transcript."""
+
+    message = "You do not have permission to view or modify this transcript."
+
+
+class IsAnswerKeyOwnerOrAdmin(IsExerciseSolutionOwnerOrAdmin):
+    """The answer key is the solution to the question sheet - owner-only."""
+
+    message = "You do not have permission to view or modify this answer key."
+
+
+class IsCollectionOwnerOrAdmin(BasePermission):
+    """Write access limited to the collection owner (or an admin).
+
+    Same reasoning as ``IsExerciseOwnerOrAdmin``: reads are governed by
+    queryset scoping, so an invisible collection 404s rather than 403s and a
+    denial never confirms that someone else's draft folder exists.
+    """
+
+    message = "You do not have permission to modify this collection."
+
+    def has_object_permission(self, request, view, obj):
+        user = request.user
+        if request.method in SAFE_METHODS:
+            return True
+        return user.is_admin or obj.owner_id == user.id

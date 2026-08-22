@@ -21,10 +21,14 @@ from .serializers import (
     PracticeSegmentSerializer,
     PracticeStartSerializer,
     PracticeSubmissionSerializer,
+    PracticeTranscriptSegmentSerializer,
     ProgressSerializer,
     RevealSerializer,
+    WorksheetAnswerSerializer,
+    WorksheetSerializer,
 )
 from .services import (
+    TranscriptNotAvailable,
     attempted_segment_count,
     exercise_progress,
     history_details,
@@ -154,6 +158,7 @@ class SubmitAnswerView(PracticeSegmentMixin, APIView):
                 "exercise_id": 125,
                 "title": "Accommodation Practice",
                 "audio_url": "http://localhost:8000/media/audio/3/9f2c.mp3",
+                "pdf_url": "http://localhost:8000/media/pdf/3/4b71.pdf",
                 "total_segments": 24,
                 "attempted_segments": 8,
                 "current_segment": {
@@ -172,6 +177,7 @@ class SubmitAnswerView(PracticeSegmentMixin, APIView):
                 "exercise_id": 125,
                 "title": "Accommodation Practice",
                 "audio_url": "http://localhost:8000/media/audio/3/9f2c.mp3",
+                "pdf_url": "http://localhost:8000/media/pdf/3/4b71.pdf",
                 "total_segments": 24,
                 "attempted_segments": 24,
                 "current_segment": None,
@@ -190,10 +196,17 @@ class StartPracticeView(PracticeExerciseMixin, APIView):
         if exercise.audio_file:
             audio_url = request.build_absolute_uri(exercise.audio_file.url)
 
+        # The handout the learner reads while listening. Null when the creator
+        # did not attach one; the client renders audio-only in that case.
+        pdf_url = None
+        if exercise.pdf_file:
+            pdf_url = request.build_absolute_uri(exercise.pdf_file.url)
+
         payload = {
             "exercise_id": exercise.id,
             "title": exercise.title,
             "audio_url": audio_url,
+            "pdf_url": pdf_url,
             "total_segments": exercise.segments.count(),
             "attempted_segments": attempted_segment_count(request.user, exercise),
             "current_segment": (
@@ -472,3 +485,123 @@ class PracticeAttemptListView(generics.ListAPIView):
             .select_related("exercise", "segment")
             .order_by("-created_at")
         )
+
+
+# --------------------------------------------------------------------------
+# Worksheet mode
+#
+# Read-only, unscored, and recording nothing. Deliberately separate views
+# rather than options on the dictation endpoints: the two modes share only the
+# exercise they run against.
+# --------------------------------------------------------------------------
+
+
+@extend_schema(
+    tags=["practice"],
+    summary="Open an exercise as a worksheet",
+    description=(
+        "Everything the worksheet page needs in one request: the audio, the PDF "
+        "question sheet, and which question numbers to render inputs for.\n\n"
+        "`question_numbers` lists the numbers as printed rather than a count, "
+        "because a sheet may cover questions 11-20. It is empty when the creator "
+        "has not written an answer key; the page is still usable as audio plus "
+        "question sheet."
+    ),
+    responses={200: WorksheetSerializer, **error_responses(403, 404, 409)},
+    examples=[
+        OpenApiExample(
+            "A Section 2 sheet",
+            response_only=True,
+            value={
+                "exercise_id": 125,
+                "title": "Section 2 - Museum tour",
+                "audio_url": "http://localhost:8000/media/audio/3/9f2c.mp3",
+                "pdf_url": "http://localhost:8000/media/pdf/3/4b71.pdf",
+                "duration": 184.2,
+                "question_numbers": [11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+                "has_transcript": True,
+            },
+        )
+    ],
+)
+class WorksheetView(PracticeExerciseMixin, APIView):
+    serializer_class = WorksheetSerializer
+
+    def get(self, request, exercise_id: int):
+        exercise = self.get_exercise()
+
+        def absolute(file_field):
+            return request.build_absolute_uri(file_field.url) if file_field else None
+
+        return Response(
+            {
+                "exercise_id": exercise.id,
+                "title": exercise.title,
+                "audio_url": absolute(exercise.audio_file),
+                "pdf_url": absolute(exercise.pdf_file),
+                "duration": exercise.duration,
+                "question_numbers": list(
+                    exercise.answers.order_by("number").values_list("number", flat=True)
+                ),
+                "has_transcript": exercise.segments.exists(),
+            }
+        )
+
+
+@extend_schema(
+    tags=["practice"],
+    summary="Read the answer key",
+    description=(
+        "The creator's answers, for the learner to check their sheet against. "
+        "Nothing is scored - the answers are shown beside what the learner typed "
+        "and the judgement is theirs.\n\n"
+        "A separate request from the worksheet so the answers are not sitting in "
+        "the page payload while the learner is still working. This is a UI "
+        "affordance, not a security boundary: the endpoint is open to anyone who "
+        "may practise the exercise, whenever they ask."
+    ),
+    responses={200: WorksheetAnswerSerializer(many=True), **error_responses(403, 404, 409)},
+    examples=[
+        OpenApiExample(
+            "Three answers",
+            response_only=True,
+            value=[
+                {"number": 11, "text": "library"},
+                {"number": 12, "text": "9.30"},
+                {"number": 13, "text": "blue"},
+            ],
+        )
+    ],
+)
+class WorksheetAnswersView(PracticeExerciseMixin, APIView):
+    serializer_class = WorksheetAnswerSerializer
+
+    def get(self, request, exercise_id: int):
+        exercise = self.get_exercise()
+        answers = exercise.answers.order_by("number")
+        return Response(WorksheetAnswerSerializer(answers, many=True).data)
+
+
+@extend_schema(
+    tags=["practice"],
+    summary="Read the full transcript",
+    description=(
+        "The whole transcript, in order, for a learner who wants to read along.\n\n"
+        "Unlike `reveal/`, this records nothing: worksheet mode has no notion of "
+        "giving up, so looking at the transcript is not an event worth logging. "
+        "The dictation endpoints keep their own text-free payloads."
+    ),
+    responses={
+        200: PracticeTranscriptSegmentSerializer(many=True),
+        **error_responses(403, 404, 409),
+    },
+)
+class WorksheetTranscriptView(PracticeExerciseMixin, APIView):
+    serializer_class = PracticeTranscriptSegmentSerializer
+
+    def get(self, request, exercise_id: int):
+        exercise = self.get_exercise()
+        segments = exercise.segments.order_by("sequence")
+        if not segments.exists():
+            raise TranscriptNotAvailable()
+        return Response(PracticeTranscriptSegmentSerializer(segments, many=True).data)

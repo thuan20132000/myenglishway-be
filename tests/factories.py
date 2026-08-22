@@ -3,7 +3,14 @@ from django.contrib.auth import get_user_model
 from django.utils import timezone
 
 from accounts.models import Role
-from listening.models import ExerciseStatus, ListeningExercise, TranscriptSegment
+from listening.models import (
+    CollectionMembership,
+    ExerciseAnswer,
+    ExerciseCollection,
+    ExerciseStatus,
+    ListeningExercise,
+    TranscriptSegment,
+)
 from practice.models import AttemptKind, PracticeAttempt
 
 User = get_user_model()
@@ -61,6 +68,20 @@ class ExerciseFactory(factory.django.DjangoModelFactory):
             published_at=factory.LazyFunction(timezone.now),
             audio_file=factory.django.FileField(filename="audio.mp3", data=b"fake-audio"),
         )
+        with_pdf = factory.Trait(
+            pdf_file=factory.django.FileField(
+                filename="questions.pdf", data=b"%PDF-1.4 fake"
+            ),
+        )
+
+
+class ExerciseAnswerFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = ExerciseAnswer
+
+    exercise = factory.SubFactory(ExerciseFactory)
+    number = factory.Sequence(lambda n: n + 1)
+    text = factory.Sequence(lambda n: f"answer {n}")
 
 
 class SegmentFactory(factory.django.DjangoModelFactory):
@@ -97,3 +118,31 @@ class AttemptFactory(factory.django.DjangoModelFactory):
             normalized_answer="",
             correct_count=0,
         )
+
+
+class CollectionFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = ExerciseCollection
+
+    owner = factory.SubFactory(CreatorFactory)
+    title = factory.Sequence(lambda n: f"Collection {n}")
+    description = ""
+
+    class Params:
+        published = factory.Trait(
+            is_published=True,
+            published_at=factory.LazyFunction(timezone.now),
+        )
+
+
+class CollectionMembershipFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = CollectionMembership
+
+    collection = factory.SubFactory(CollectionFactory)
+    # Owned by the collection's owner: the service layer refuses cross-owner
+    # membership, so a factory that produced one would build invalid fixtures.
+    exercise = factory.SubFactory(
+        ExerciseFactory, owner=factory.SelfAttribute("..collection.owner")
+    )
+    position = factory.Sequence(lambda n: n + 1)

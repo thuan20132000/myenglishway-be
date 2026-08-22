@@ -1,4 +1,4 @@
-from django.db.models import Count, Prefetch, Q
+from django.db.models import Count, F, Prefetch, Q
 from drf_spectacular.utils import (
     OpenApiExample,
     OpenApiParameter,
@@ -152,7 +152,11 @@ class ListeningExerciseViewSet(
     permission_classes = [IsAuthenticated, IsExerciseOwnerOrAdmin]
     filterset_class = ListeningExerciseFilterSet
     search_fields = ["title", "description"]
-    ordering_fields = ["created_at", "title", "duration"]
+    # "position" is the membership order, exposed through the annotation in
+    # get_queryset(). It has to be an ordering term rather than something a
+    # filter applies: OrderingFilter runs last and would overwrite anything a
+    # filter set with the -created_at default below.
+    ordering_fields = ["created_at", "title", "duration", "position"]
     ordering = ["-created_at"]
     http_method_names = ["get", "post", "patch", "delete", "head", "options"]
 
@@ -183,8 +187,14 @@ class ListeningExerciseViewSet(
             return ListeningExercise.objects.none()
 
         user = self.request.user
-        queryset = ListeningExercise.objects.select_related("owner").annotate(
-            segment_count=Count("segments", distinct=True)
+        queryset = ListeningExercise.objects.select_related(
+            "owner", "membership__collection__parent"
+        ).annotate(
+            segment_count=Count("segments", distinct=True),
+            answer_count=Count("answers", distinct=True),
+            # Null for an ungrouped exercise; only a total order alongside
+            # ?collection=, which is the only place it is worth asking for.
+            position=F("membership__position"),
         )
 
         if not user.is_admin:
@@ -205,6 +215,7 @@ class ListeningExerciseViewSet(
 
     def _detail_response(self, exercise, status_code):
         exercise.segment_count = exercise.segments.count()
+        exercise.answer_count = exercise.answers.count()
         serializer = ListeningExerciseDetailSerializer(
             exercise, context=self.get_serializer_context()
         )

@@ -14,7 +14,13 @@ from common import errors
 
 from common.text import tokenize
 
-from .models import ExerciseStatus, ListeningExercise, TranscriptSegment
+from .answer_key import parse_answer_key
+from .models import (
+    ExerciseAnswer,
+    ExerciseStatus,
+    ListeningExercise,
+    TranscriptSegment,
+)
 
 
 class ExerciseLocked(errors.ConflictError):
@@ -91,6 +97,8 @@ def create_exercise(*, owner, **fields) -> ListeningExercise:
 def update_exercise(exercise: ListeningExercise, **fields) -> ListeningExercise:
     """Apply metadata edits, treating an audio swap as a state transition."""
     new_audio = fields.pop("audio_file", None)
+    new_pdf = fields.pop("pdf_file", None)
+    remove_pdf = fields.pop("remove_pdf", False)
     explicit_duration = fields.pop("duration", "unset")
 
     for field, value in fields.items():
@@ -98,6 +106,12 @@ def update_exercise(exercise: ListeningExercise, **fields) -> ListeningExercise:
 
     if new_audio is not None:
         _replace_audio(exercise, new_audio)
+
+    # A new file wins over the removal flag: sending both is a replace.
+    if new_pdf is not None:
+        _replace_pdf(exercise, new_pdf)
+    elif remove_pdf:
+        _remove_pdf(exercise)
 
     # Applied after the audio swap, which clears the old duration: a client
     # replacing the file and stating the new length in one request means it.
@@ -131,6 +145,64 @@ def _replace_audio(exercise: ListeningExercise, audio_file) -> None:
     exercise.status = ExerciseStatus.UPLOADED
     exercise.processing_error = ""
     exercise.processing_started_at = None
+
+
+def _replace_pdf(exercise: ListeningExercise, pdf_file) -> None:
+    """Swap the handout, leaving every other field alone.
+
+    Deliberately unlike :func:`_replace_audio`: nothing is derived from the PDF,
+    so there is no duration to clear, no status to reset and nothing to
+    transcribe. It is also allowed while published - the audio and its segment
+    timings are untouched, so a creator fixing a typo in the question sheet has
+    no reason to take the exercise offline first.
+    """
+    _discard_pdf_file(exercise)
+    exercise.pdf_file = pdf_file
+
+
+def _remove_pdf(exercise: ListeningExercise) -> None:
+    """Detach the handout, leaving the exercise otherwise practisable."""
+    _discard_pdf_file(exercise)
+    exercise.pdf_file = None
+
+
+def _discard_pdf_file(exercise: ListeningExercise) -> None:
+    """Delete the stored file so a swap does not orphan it.
+
+    ``save=False`` because the caller saves the row once, after all the field
+    changes have been applied.
+    """
+    if exercise.pdf_file:
+        exercise.pdf_file.delete(save=False)
+
+
+# --------------------------------------------------------------------------
+# Answer key
+# --------------------------------------------------------------------------
+
+
+@transaction.atomic
+def replace_answer_key(exercise: ListeningExercise, raw: str) -> list[ExerciseAnswer]:
+    """Replace an exercise's whole answer key with a pasted list.
+
+    Wholesale replacement rather than a row-by-row diff: the input *is* the
+    entire key, and the rows it describes have no identity to match existing
+    ones against. Empty input clears the key.
+
+    Allowed while published, like the PDF swap and unlike an audio swap: no
+    segment timing depends on the key, so a creator correcting a typo has no
+    reason to take the exercise offline.
+    """
+    pairs = parse_answer_key(raw)
+
+    exercise.answers.all().delete()
+    if not pairs:
+        return []
+
+    return ExerciseAnswer.objects.bulk_create(
+        ExerciseAnswer(exercise=exercise, number=number, text=text)
+        for number, text in pairs
+    )
 
 
 def recompute_ready_state(exercise: ListeningExercise) -> ListeningExercise:
