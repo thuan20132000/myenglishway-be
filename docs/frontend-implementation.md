@@ -57,7 +57,8 @@ knowing the words.
 
 ## 3. Authentication
 
-JWT bearer tokens. Three public endpoints; everything else needs a header.
+JWT bearer tokens. The three endpoints below and the read-only `public/`
+routes (§5) need no header; everything else does.
 
 ```
 Authorization: Bearer <access_token>
@@ -93,23 +94,233 @@ on reload.
 
 ## 4. Roles
 
-| | student | creator | admin |
-|---|---|---|---|
-| Practise published exercises | ✅ | ✅ | ✅ |
-| See own attempts / progress / history | ✅ | ✅ | ✅ |
-| Create & edit own exercises | ❌ | ✅ | ✅ |
-| See transcripts (`/listening/` routes) | ❌ | own only | all |
-| Publish / unpublish | ❌ | own only | all |
-| See any exercise | published only | published + own | all |
+| | anonymous | student | creator | admin |
+|---|---|---|---|---|
+| Browse published collections & exercises | ✅ | ✅ | ✅ | ✅ |
+| Play audio, read segment timings | ✅ | ✅ | ✅ | ✅ |
+| Submit answers / reveal / worksheet key | ❌ | ✅ | ✅ | ✅ |
+| See own attempts / progress / history | ❌ | ✅ | ✅ | ✅ |
+| Create & edit own exercises | ❌ | ❌ | ✅ | ✅ |
+| See transcripts (`/listening/` routes) | ❌ | ❌ | own only | all |
+| Publish / unpublish | ❌ | ❌ | own only | all |
+| See any exercise | published only | published only | published + own | all |
 
 `GET /auth/me/` returns `role`. Gate navigation on it, but treat the server as
 the authority — a student hitting a creator route gets 403 or 404 regardless.
 
+Anonymous is not a role, it is the absence of a token: it selects the `public/`
+routes described in §5, not a different view of the authenticated ones.
+
 ---
 
-## 5. Creator flow
+## 5. Anonymous browsing (no account)
 
-### 5.1 Upload
+Everything a visitor needs to find material and start a dictation drill is
+available without a token, under `public/`. Send **no** `Authorization` header
+to these — they ignore it — and route the app's landing page at them so the
+catalogue renders before login.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /listening/public/collections/` | Published **root** collections, paginated |
+| `GET /listening/public/collections/{id}/` | One collection with its published `children` and `members` |
+| `GET /listening/public/exercises/` | Published exercises, paginated |
+| `GET /listening/public/exercises/{id}/` | One published exercise |
+| `GET /practice/public/exercises/{id}/segments/` | Segment playback windows, bare array |
+
+The two collection and two exercise routes return **exactly what a signed-in
+student receives** from their authenticated twins (§7.1) — same serializers,
+same fields, same pagination envelope. So the browse screen can be written once
+and pointed at either surface depending on whether a token is held:
+
+```ts
+const base = token ? "/listening" : "/listening/public";
+const { data } = await api.get(`${base}/exercises/`, { params });
+```
+
+The segment route is the one exception: the authenticated version (§7.3) adds
+`attempted` and `best_score` per row, which need an account to compute. The
+public one returns the same rows without those two keys.
+
+### 5.1 What is and isn't visible
+
+**Published rows only.** An unpublished collection or exercise returns **404**,
+never 403 — the API refuses to confirm that someone's draft exists. Don't write
+a "this is private, log in to see it" branch off a 404; there is nothing to log
+in for.
+
+Filtering runs all the way down: opening a published book returns only its
+published tests, and only its published exercises. A published exercise filed
+inside an unpublished collection has `collection: null` in its breadcrumb
+rather than leaking the book's title — so render the breadcrumb defensively,
+`collection` and `collection.parent` are independently nullable.
+
+**No transcript, ever.** The rule in §2 holds here with no escape hatch: the
+public exercise detail has no `segments` key, and the public segment list has no
+`text` field. There is no anonymous equivalent of `submit/` or `reveal/`.
+
+### 5.2 The shape of the catalogue
+
+Collections nest exactly two deep: a **book** holds **tests**, a test holds
+**exercises**. Three requests take a visitor from the landing page to a
+playable segment. The payloads below are real responses, trimmed only of
+timestamps.
+
+**1. Landing page** — `GET /listening/public/collections/`
+
+```json
+{ "count": 1, "next": null, "previous": null,
+  "results": [
+    { "id": 1, "title": "Cambridge IELTS 18",
+      "owner": {"id": 1, "full_name": "Ben Ito"},
+      "is_published": true, "position": 1,
+      "child_count": 1, "member_count": 0, "created_at": "..." }
+  ] }
+```
+
+**2. Open the book** — `GET /listening/public/collections/1/`
+
+```json
+{ "id": 1, "title": "Cambridge IELTS 18", "description": "",
+  "owner": {"id": 1, "full_name": "Ben Ito"},
+  "parent": null, "is_published": true, "published_at": "...",
+  "position": 1, "child_count": 1, "member_count": 0,
+  "children": [
+    { "id": 2, "title": "Test 1", "owner": {"id": 1, "full_name": "Ben Ito"},
+      "is_published": true, "position": 1,
+      "child_count": 0, "member_count": 4, "created_at": "..." }
+  ],
+  "members": [],
+  "created_at": "...", "updated_at": "..." }
+```
+
+**3. Open the test** — `GET /listening/public/collections/2/`. Same shape, but
+now `children` is empty and `members` holds exercise rows identical to those
+from the exercise list, each with its own breadcrumb:
+
+```json
+{ "id": 2, "title": "Test 1",
+  "parent": {"id": 1, "title": "Cambridge IELTS 18", "parent": null},
+  "child_count": 0, "member_count": 4,
+  "children": [],
+  "members": [
+    { "id": 1, "title": "Part 1: Accommodation",
+      "owner": {"id": 1, "full_name": "Ben Ito"},
+      "status": "ready", "is_published": true, "duration": 184.2,
+      "language": "en", "has_pdf": true, "segment_count": 24,
+      "collection": {"id": 2, "title": "Test 1",
+                     "parent": {"id": 1, "title": "Cambridge IELTS 18"}},
+      "created_at": "..." }
+  ] }
+```
+
+**4. Open the exercise** — `GET /listening/public/exercises/1/`
+
+```json
+{ "id": 1, "title": "Part 1: Accommodation",
+  "description": "IELTS Section 1 practice",
+  "owner": {"id": 1, "full_name": "Ben Ito"},
+  "status": "ready", "is_published": true, "published_at": "...",
+  "duration": 184.2, "language": "en",
+  "audio_url": "http://localhost:8000/media/audio/1/0d1e116c.mp3",
+  "pdf_url": "http://localhost:8000/media/pdf/1/6f06b2c0.pdf",
+  "segment_count": 24, "answer_count": 10,
+  "collection": {"id": 2, "title": "Test 1",
+                 "parent": {"id": 1, "title": "Cambridge IELTS 18"}},
+  "created_at": "...", "updated_at": "..." }
+```
+
+Note there is **no** `segments` key — that is the §2 rule, not an omission.
+
+**5. Load the playback windows** — `GET /practice/public/exercises/1/segments/`.
+A **bare array**, not paginated, ordered by `sequence`:
+
+```json
+[ { "id": 1, "sequence": 1, "start_time": 0.0,  "end_time": 5.0,  "word_count": 7 },
+  { "id": 2, "sequence": 2, "start_time": 6.0,  "end_time": 11.0, "word_count": 9 } ]
+```
+
+That is everything the player needs: `audio_url` from step 4, and a
+`[start_time, end_time)` window per segment to seek and loop.
+
+Two nullability traps in the breadcrumb: `collection` is `null` for an
+ungrouped exercise **and** for one whose collection the visitor may not see,
+and `collection.parent` is `null` both for a test directly under no book and
+for a book the visitor may not see. It never nests further than
+`collection.parent`, so two optional-chained levels cover every case.
+
+### 5.3 Filters and ordering
+
+`/listening/public/exercises/` accepts the same query parameters as the
+authenticated list: `search`, `language`, `collection`, `ungrouped`,
+`ordering`, `page`, `page_size`. `status` and `is_published` are accepted but
+pointless here: the surface is published-only, and a database constraint makes
+"published but still processing" impossible, so every row is `ready`.
+
+Two that matter for a catalogue landing page:
+
+```
+GET /listening/public/exercises/?collection=3&ordering=position
+GET /listening/public/exercises/?ungrouped=true
+```
+
+`position` is the membership order inside a collection — "Part 1, Part 2,
+Part 3, Part 4" of a test. It is `null` for an ungrouped exercise, so only ask
+for it alongside `?collection=`. `ungrouped=true` gives the loose exercises to
+show beside the collection cards.
+
+`/listening/public/collections/` lists **roots only** — a child collection is
+reached by opening its parent, never as a top-level card. A row tells you which
+it is:
+
+```json
+{ "id": 3, "title": "Cambridge IELTS 18",
+  "owner": {"id": 3, "full_name": "Ben Ito"},
+  "is_published": true, "position": 1,
+  "child_count": 4, "member_count": 0, "created_at": "..." }
+```
+
+`child_count > 0` → the detail response fills `children` (drill down again).
+`member_count > 0` → it fills `members` with exercise rows (this is the leaf).
+A collection never has both, so branch on whichever is non-zero.
+
+### 5.4 How far an anonymous visitor can go
+
+They can browse, open an exercise, load its audio, open the question PDF, and
+fetch the segment timings — enough to play a segment and type an answer
+locally. They **cannot** be scored: `submit/`, `reveal/`, `start/`, `progress/`,
+`history/` and the worksheet answer key all require a token, because all of them
+read or write attempts belonging to a user.
+
+That gives you a natural signup wall. Recommended shape:
+
+1. Render the catalogue and the exercise page anonymously.
+2. Let them play audio and type into the answer box.
+3. On **submit**, if there is no token, keep the typed answer in memory, prompt
+   for login/registration, and replay `POST /practice/segments/{id}/submit/`
+   once a token arrives.
+
+Don't fake a score client-side to fill the gap — you don't have the transcript,
+and normalisation (§7.4) is deliberately server-side.
+
+### 5.5 Migrating the session on login
+
+The public and authenticated payloads carry the same `id`s, so nothing needs
+remapping. After login, re-fetch through the authenticated routes to pick up
+what the anonymous surface cannot know:
+
+- `GET /practice/exercises/{id}/segments/` adds `attempted` and `best_score`
+  per segment.
+- `POST /practice/exercises/{id}/start/` gives the resume point.
+
+Treat anything the visitor typed before signing in as unsaved: it exists only
+in your store until a `submit/` succeeds.
+
+---
+
+## 6. Creator flow
+
+### 6.1 Upload
 
 `POST /listening/exercises/` — **`multipart/form-data`**, not JSON.
 
@@ -137,7 +348,7 @@ automatic transcription refuses anything over 25 MB. Validate client-side
 against 25 MB if the server has auto-transcription on, otherwise the upload
 succeeds and fails minutes later. Ask your backend which limits are configured.
 
-### 5.2 Wait for transcription
+### 6.2 Wait for transcription
 
 Uploading queues a background job. Poll:
 
@@ -173,7 +384,7 @@ draft ──(audio added)──► uploaded ──► processing ──► ready
 
 There is no WebSocket push. Polling is the intended mechanism.
 
-### 5.3 Review and correct segments
+### 6.3 Review and correct segments
 
 `GET /listening/exercises/{id}/segments/` — **not paginated**, returns a bare
 array. Includes `text`.
@@ -209,11 +420,11 @@ Two behaviours to surface in the UI:
 - **Correcting text does not change past scores** — learners' attempts keep a
   snapshot of the transcript as it read when they answered.
 
-### 5.4 The answer key
+### 6.4 The answer key
 
 `GET` / `PUT /listening/exercises/{id}/answers/` — **owner or admin only, for
 reads as well as writes.** This is the solution to the question sheet; learners
-read the same answers through the practice API instead (§6.7).
+read the same answers through the practice API instead (§7.7).
 
 ```json
 PUT { "answer_key": "11. library\n12. 9.30\n13. blue" }
@@ -237,7 +448,7 @@ The key is pasted the way it is printed, one answer per line. Rules:
 The key is optional. `answer_count` on the exercise detail says how many
 answers exist.
 
-### 5.5 Publish
+### 6.5 Publish
 
 `POST /listening/exercises/{id}/publish/` → `200` with
 `{id, status, is_published, published_at}`.
@@ -267,18 +478,21 @@ two actions.
 
 ---
 
-## 6. Learner flow
+## 7. Learner flow
 
-There are two ways to practise the same exercise. **Worksheet mode** (§6.7) is
+There are two ways to practise the same exercise. **Worksheet mode** (§7.7) is
 the paper workflow: question sheet open, audio playing straight through, fill in
-an answer column, then read the key. **Dictation mode** (§6.2–6.6) is the
+an answer column, then read the key. **Dictation mode** (§7.2–7.6) is the
 segment-by-segment transcription drill with server-side scoring. They share
 nothing but the exercise.
 
-### 6.1 Browse
+### 7.1 Browse
 
 `GET /listening/exercises/` — **paginated** (`{count, next, previous, results}`),
 20 per page, `page_size` up to 100.
+
+For a signed-out visitor this is `GET /listening/public/exercises/` instead
+(§5); the rows are identical, so build the screen once and switch the base path.
 
 Filters: `status`, `is_published`, `owner`, `language`, `search` (title +
 description), `ordering` (`created_at`, `-created_at`, `title`, `duration`),
@@ -290,12 +504,16 @@ List rows carry **no** `description` and **no** `segments` — they are for card
 { "id": 125, "title": "Accommodation Practice",
   "owner": {"id": 3, "full_name": "Ben Ito"},
   "status": "ready", "is_published": true, "duration": 184.2,
-  "language": "en", "audio_url": "http://localhost:8000/media/audio/3/9f2c.mp3",
-  "pdf_url": "http://localhost:8000/media/pdf/3/4b71.pdf",
-  "segment_count": 24, "created_at": "..." }
+  "language": "en", "has_pdf": true, "segment_count": 24,
+  "collection": {"id": 7, "title": "Test 1", "parent": {"id": 3, "title": "Cambridge IELTS 18"}},
+  "created_at": "..." }
 ```
 
-### 6.2 Start / resume
+`audio_url` and `pdf_url` are **not** on list rows — fetch the detail route (or
+`start/`) for those. `has_pdf` is there so a card can show a handout badge
+without one request per row.
+
+### 7.2 Start / resume
 
 `POST /practice/exercises/{id}/start/` (POST, but it writes nothing — no
 session is created).
@@ -316,7 +534,7 @@ session is created).
 - **A revealed segment still counts as unanswered.** Revealing doesn't advance
   the resume point.
 
-### 6.3 The practice loop
+### 7.3 The practice loop
 
 `GET /practice/exercises/{id}/segments/` — **not paginated**, bare array, with
 per-learner progress:
@@ -398,7 +616,7 @@ submissions are allowed and each creates a new attempt — offer "try again"
 freely; a learner's average uses their *best* score per segment, so retrying
 can never hurt them.
 
-### 6.4 Rendering the diff — read this carefully
+### 7.4 Rendering the diff — read this carefully
 
 Two things trip people up:
 
@@ -433,7 +651,7 @@ feedback in the payload.
 - Score is `correct / max(expected_words, submitted_words)`, so padding an
   answer with extra words lowers the score rather than being free.
 
-### 6.5 Reveal
+### 7.5 Reveal
 
 `POST /practice/segments/{id}/reveal/` → `200`:
 
@@ -447,7 +665,7 @@ Put this behind a confirm — it is the "give up" action. It is recorded (visibl
 in history as `kind: "reveal"`), does **not** count as attempted or completed,
 and does **not** affect `average_score`.
 
-### 6.6 Progress and history
+### 7.6 Progress and history
 
 `GET /practice/exercises/{id}/progress/`:
 
@@ -485,7 +703,7 @@ addressable.
 
 ---
 
-### 6.7 Worksheet mode
+### 7.7 Worksheet mode
 
 Three GETs, none of which record anything. All are gated by the same rule as the
 rest of practice: published, `ready`, or you own it.
@@ -521,7 +739,7 @@ gets wrong and a person gets right instantly.
 `[{"id", "sequence", "start_time", "end_time", "text"}, …]`, ordered. `409
 TRANSCRIPT_NOT_AVAILABLE` when the exercise has no segments.
 
-Unlike `reveal/` (§6.5), **this records nothing** — worksheet mode has no notion
+Unlike `reveal/` (§7.5), **this records nothing** — worksheet mode has no notion
 of giving up, so reading along is not an event worth logging. Each line carries
 its `start_time`, so clicking one can seek the player.
 
@@ -532,7 +750,7 @@ column that scrolls. Keep the player **pinned** — a −10s button that scrolls
 of reach defeats the whole workflow. Below a tablet width, make the two panes a
 tab toggle rather than a cramped split.
 
-## 7. Errors
+## 8. Errors
 
 Two shapes. **Field validation** keeps a key per field:
 
@@ -573,8 +791,15 @@ say not found.
 
 ---
 
-## 8. Gotchas
+## 9. Gotchas
 
+- **`public/` routes 404 rather than 403.** Everywhere else a 404 can mean
+  "exists but not yours"; on the public surface it only ever means "not
+  published". Don't offer a login prompt off it.
+- **Don't send a bearer token to `public/` routes.** They ignore authentication
+  entirely, so a creator hitting them sees the learner view of their own draft
+  — which is to say, a 404. Switch the base path on login, don't just add the
+  header (§5).
 - **Pagination is inconsistent by design.** Exercise list, history and attempts
   are paginated objects. Segment lists (both creator and practice) are **bare
   arrays** — a transcript is read whole. Don't write one generic list handler
@@ -608,12 +833,14 @@ say not found.
 
 ---
 
-## 9. Suggested build order
+## 10. Suggested build order
 
-1. **Auth shell** — login, register, token storage, refresh interceptor, `me`
+1. **Anonymous catalogue** — the `public/` collection and exercise lists
+   (§5). Read-only and unauthenticated, so it proves pagination, filtering and
+   error handling before any token plumbing exists. The same components serve
+   the signed-in browse screen by swapping the base path.
+2. **Auth shell** — login, register, token storage, refresh interceptor, `me`
    bootstrap, role-based routing.
-2. **Exercise browse** — paginated list, filters, search. Read-only; proves
-   pagination and error handling.
 3. **Practice loop** — the core product: `start/` → audio player with segment
    seeking → answer box → submit → diff rendering. Build this before any
    creator UI; it is where the design risk is.
@@ -627,7 +854,7 @@ say not found.
 Steps 3 and 5–7 are independent; the practice loop can be built against a
 manually-seeded exercise.
 
-## 10. Local setup
+## 11. Local setup
 
 ```bash
 # backend

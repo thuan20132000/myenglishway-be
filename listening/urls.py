@@ -3,6 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from .answer_views import ExerciseAnswerKeyView
 from .collection_views import ExerciseCollectionViewSet
+from .public_views import PublicCollectionViewSet, PublicExerciseViewSet
 from .segment_views import ExerciseSegmentViewSet, SegmentViewSet
 from .views import ListeningExerciseViewSet
 
@@ -10,6 +11,10 @@ router = DefaultRouter()
 router.register("exercises", ListeningExerciseViewSet, basename="exercise")
 router.register("segments", SegmentViewSet, basename="segment")
 router.register("collections", ExerciseCollectionViewSet, basename="collection")
+# Anonymous catalogue. Registered on the same router so it inherits the
+# trailing-slash and format-suffix conventions of the rest of the surface.
+router.register("public/collections", PublicCollectionViewSet, basename="public-collection")
+router.register("public/exercises", PublicExerciseViewSet, basename="public-exercise")
 
 # Routed by hand rather than as @action: removing one member needs the
 # exercise id in the path, which the router will not generate.

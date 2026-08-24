@@ -9,13 +9,27 @@ info:
 
     ## Authentication
 
-    All endpoints except registration, login and token refresh require a JWT:
+    Most endpoints require a JWT:
 
         Authorization: Bearer <access_token>
 
     Obtain a token pair from `POST /api/v1/auth/register/` or
     `POST /api/v1/auth/login/`, and renew the access token with
     `POST /api/v1/auth/token/refresh/`.
+
+    The exceptions are registration, login, token refresh, and the read-only
+    `public` endpoints, which any visitor may call without a token:
+
+    | Endpoint | Returns |
+    |---|---|
+    | `GET /api/v1/listening/public/collections/` | Published root collections |
+    | `GET /api/v1/listening/public/collections/{id}/` | One published collection with its published contents |
+    | `GET /api/v1/listening/public/exercises/` | Published exercises (same filters as the authenticated list) |
+    | `GET /api/v1/listening/public/exercises/{id}/` | One published exercise, transcript excluded |
+    | `GET /api/v1/practice/public/exercises/{id}/segments/` | Segment playback windows, transcript excluded |
+
+    They show published rows only, and anything unpublished returns 404. Scoring
+    an answer, revealing a transcript and recording progress still need an account.
 
     ## Roles
 
@@ -1640,6 +1654,235 @@ paths:
               example:
                 code: AUTHENTICATION_FAILED
                 detail: Authentication credentials were not provided.
+  /api/v1/listening/public/collections/:
+    get:
+      operationId: listening_public_collections_list
+      description: The anonymous catalogue. Only published root collections are listed;
+        a child collection is reached by opening its parent.
+      summary: List published root collections (no authentication)
+      parameters:
+      - name: ordering
+        required: false
+        in: query
+        description: Which field to use when ordering the results.
+        schema:
+          type: string
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: page_size
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: search
+        required: false
+        in: query
+        description: A search term.
+        schema:
+          type: string
+      tags:
+      - public
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCollectionListList'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/listening/public/collections/{id}/:
+    get:
+      operationId: listening_public_collections_retrieve
+      description: '`children` holds nested collections, `members` the exercises filed
+        directly here, both filtered to published rows. An unpublished collection
+        returns 404.'
+      summary: Retrieve one published collection with its contents
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this exercise collection.
+        required: true
+      tags:
+      - public
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CollectionDetail'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/listening/public/exercises/:
+    get:
+      operationId: listening_public_exercises_list
+      description: Every published exercise, whether or not it is filed under a collection.
+        Use `?collection=<id>` for one collection's exercises in membership order
+        (`?ordering=position`), or `?ungrouped=true` for the ones filed nowhere.
+      summary: List published exercises (no authentication)
+      parameters:
+      - in: query
+        name: collection
+        schema:
+          type: number
+      - in: query
+        name: is_published
+        schema:
+          type: boolean
+      - in: query
+        name: language
+        schema:
+          type: string
+      - in: query
+        name: ordering
+        schema:
+          type: string
+        description: One of created_at, -created_at, title, -title, duration, position.
+      - in: query
+        name: owner
+        schema:
+          type: number
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: page_size
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - in: query
+        name: search
+        schema:
+          type: string
+        description: Matches title and description.
+      - in: query
+        name: status
+        schema:
+          type: string
+          enum:
+          - draft
+          - failed
+          - processing
+          - ready
+          - uploaded
+        description: |-
+          * `draft` - Draft
+          * `uploaded` - Uploaded
+          * `processing` - Processing
+          * `ready` - Ready
+          * `failed` - Failed
+      - in: query
+        name: ungrouped
+        schema:
+          type: boolean
+      tags:
+      - public
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedListeningExerciseListList'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/listening/public/exercises/{id}/:
+    get:
+      operationId: listening_public_exercises_retrieve
+      description: 'Metadata plus `audio_url` and `pdf_url`. The transcript is never
+        included: fetch the segment timings from the public practice endpoint and
+        score answers by signing in. An unpublished exercise returns 404.'
+      summary: Retrieve one published exercise
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this listening exercise.
+        required: true
+      tags:
+      - public
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListeningExerciseDetail'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
   /api/v1/listening/segments/{id}/:
     get:
       operationId: listening_segments_retrieve
@@ -2420,6 +2663,74 @@ paths:
                   summary: One exercise practised
           description: ''
         '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/practice/public/exercises/{exercise_id}/segments/:
+    get:
+      operationId: practice_public_exercises_segments_list
+      description: |-
+        The anonymous equivalent of the practice segment list: playback windows only, and without the per-learner `attempted`/`best_score` columns, which need an account. Scoring an answer, revealing a transcript and recording history all require signing in.
+
+        The exercise must be published and `ready`; anything else returns 404 rather than the 409 the authenticated endpoint gives, because an anonymous caller is not entitled to learn that a draft exists.
+      summary: List a published exercise's segments for practice (no authentication)
+      parameters:
+      - in: path
+        name: exercise_id
+        schema:
+          type: integer
+        required: true
+      - name: ordering
+        required: false
+        in: query
+        description: Which field to use when ordering the results.
+        schema:
+          type: string
+      - name: search
+        required: false
+        in: query
+        description: A search term.
+        schema:
+          type: string
+      tags:
+      - public
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PracticeSegment'
+              examples:
+                TwoPlaybackWindows:
+                  value:
+                  - - id: 501
+                      sequence: 1
+                      start_time: 0.5
+                      end_time: 5.8
+                      word_count: 7
+                    - id: 502
+                      sequence: 2
+                      start_time: 6.0
+                      end_time: 12.4
+                      word_count: 9
+                  summary: Two playback windows
+          description: ''
+        '404':
           content:
             application/json:
               schema:

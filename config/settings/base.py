@@ -168,13 +168,27 @@ segments, and running dictation practice.
 
 ## Authentication
 
-All endpoints except registration, login and token refresh require a JWT:
+Most endpoints require a JWT:
 
     Authorization: Bearer <access_token>
 
 Obtain a token pair from `POST /api/v1/auth/register/` or
 `POST /api/v1/auth/login/`, and renew the access token with
 `POST /api/v1/auth/token/refresh/`.
+
+The exceptions are registration, login, token refresh, and the read-only
+`public` endpoints, which any visitor may call without a token:
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/v1/listening/public/collections/` | Published root collections |
+| `GET /api/v1/listening/public/collections/{id}/` | One published collection with its published contents |
+| `GET /api/v1/listening/public/exercises/` | Published exercises (same filters as the authenticated list) |
+| `GET /api/v1/listening/public/exercises/{id}/` | One published exercise, transcript excluded |
+| `GET /api/v1/practice/public/exercises/{id}/segments/` | Segment playback windows, transcript excluded |
+
+They show published rows only, and anything unpublished returns 404. Scoring
+an answer, revealing a transcript and recording progress still need an account.
 
 ## Roles
 

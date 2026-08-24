@@ -6,6 +6,7 @@ from .views import (
     PracticeHistoryView,
     PracticeSegmentDetailView,
     PracticeSegmentListView,
+    PublicPracticeSegmentListView,
     RevealSegmentView,
     StartPracticeView,
     SubmitAnswerView,
@@ -52,6 +53,11 @@ urlpatterns = [
     ),
     path("history/", PracticeHistoryView.as_view(), name="practice-history"),
     path("attempts/", PracticeAttemptListView.as_view(), name="practice-attempts"),
+    path(
+        "public/exercises/<int:exercise_id>/segments/",
+        PublicPracticeSegmentListView.as_view(),
+        name="public-practice-segments",
+    ),
     path(
         "segments/<int:segment_id>/submit/",
         SubmitAnswerView.as_view(),

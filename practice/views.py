@@ -1,13 +1,13 @@
 from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import OpenApiExample, OpenApiParameter, extend_schema
 from rest_framework import generics, status
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from common.openapi import error_responses
 from common.serializers import ErrorSerializer
-from listening.models import ListeningExercise, TranscriptSegment
+from listening.models import ExerciseStatus, ListeningExercise, TranscriptSegment
 
 from .permissions import CanPracticeExercise
 from .filters import PracticeAttemptFilterSet
@@ -605,3 +605,55 @@ class WorksheetTranscriptView(PracticeExerciseMixin, APIView):
         if not segments.exists():
             raise TranscriptNotAvailable()
         return Response(PracticeTranscriptSegmentSerializer(segments, many=True).data)
+
+
+@extend_schema(
+    tags=["public"],
+    summary="List a published exercise's segments for practice (no authentication)",
+    description=(
+        "The anonymous equivalent of the practice segment list: playback "
+        "windows only, and without the per-learner `attempted`/`best_score` "
+        "columns, which need an account. Scoring an answer, revealing a "
+        "transcript and recording history all require signing in.\n\n"
+        "The exercise must be published and `ready`; anything else returns 404 "
+        "rather than the 409 the authenticated endpoint gives, because an "
+        "anonymous caller is not entitled to learn that a draft exists."
+    ),
+    responses={200: PracticeSegmentSerializer(many=True), 404: ErrorSerializer},
+    examples=[
+        OpenApiExample(
+            "Two playback windows",
+            response_only=True,
+            value=[
+                {"id": 501, "sequence": 1, "start_time": 0.5, "end_time": 5.8, "word_count": 7},
+                {"id": 502, "sequence": 2, "start_time": 6.0, "end_time": 12.4, "word_count": 9},
+            ],
+        )
+    ],
+)
+class PublicPracticeSegmentListView(generics.ListAPIView):
+    """Segment timings for anyone, gated on the exercise being open to learners.
+
+    Deliberately does not reuse ``PracticeExerciseMixin``: that path runs
+    ``CanPracticeExercise``, which reads ``user.is_admin`` and distinguishes
+    "not published" from "not ready" in the response. Both are wrong here - an
+    anonymous caller has no role, and telling them why an id is unavailable
+    leaks the existence of unpublished work.
+    """
+
+    serializer_class = PracticeSegmentSerializer
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    pagination_class = None
+
+    def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return TranscriptSegment.objects.none()
+
+        exercise = get_object_or_404(
+            ListeningExercise,
+            pk=self.kwargs["exercise_id"],
+            is_published=True,
+            status=ExerciseStatus.READY,
+        )
+        return exercise.segments.order_by("sequence")
