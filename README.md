@@ -46,6 +46,29 @@ celery -A config worker -l info
 
 The API listens on `http://127.0.0.1:8000/`. Admin: `/admin/`.
 
+### Media storage
+
+Local and tests store uploads under `media/` on disk (`DEBUG` serves them with byte-range support for seeking).
+
+Production uses S3. Set these (IAM role preferred over keys):
+
+```
+AWS_STORAGE_BUCKET_NAME=your-bucket
+AWS_S3_REGION_NAME=us-east-1
+```
+
+Optional: `AWS_S3_CUSTOM_DOMAIN` (CloudFront), `AWS_S3_QUERYSTRING_AUTH=True` for private objects with signed URLs.
+
+To try S3 from `runserver`, set `USE_S3=True` in `.env` as well — the **Celery worker must use the same settings** so Whisper can open the file.
+
+The bucket needs CORS for the frontend origin (`GET`, `HEAD`, header `Range`) if the player loads `audio_url` / `pdf_url` in the browser. Existing local files:
+
+```bash
+aws s3 sync media/ s3://your-bucket/
+```
+
+Database rows already store paths like `audio/1/<uuid>.mp3`; they do not need rewriting.
+
 Transcription needs `OPENAI_API_KEY` and `TRANSCRIPTION_PROVIDER=openai`. Use `stub` to develop without calling OpenAI. Whisper rejects files over 25 MB (`TRANSCRIPTION_MAX_FILE_SIZE_MB`); that cap is independent of `MAX_AUDIO_FILE_SIZE_MB`.
 
 To load a transcript by hand instead of Whisper:

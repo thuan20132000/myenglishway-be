@@ -117,6 +117,10 @@ class ExerciseMediaUrlMixin(serializers.Serializer):
         if not file_field:
             return None
         url = file_field.url
+        # S3 (and any CDN domain) already returns an absolute URL. Prefixing
+        # it with the API origin would break the player.
+        if url.startswith(("http://", "https://")):
+            return url
         request = self.context.get("request")
         return request.build_absolute_uri(url) if request else url
 

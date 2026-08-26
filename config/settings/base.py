@@ -17,6 +17,8 @@ env = environ.Env(
     SECRET_KEY=(str, "insecure-dev-key-change-me"),
     ALLOWED_HOSTS=(list, ["localhost", "127.0.0.1"]),
     CORS_ALLOWED_ORIGINS=(list, ["http://localhost:3000"]),
+    USE_S3=(bool, False),
+    AWS_S3_QUERYSTRING_AUTH=(bool, False),
 )
 
 environ.Env.read_env(BASE_DIR / ".env")
