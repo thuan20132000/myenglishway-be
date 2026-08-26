@@ -18,6 +18,14 @@ SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True
 SECURE_HSTS_SECONDS = 60 * 60 * 24 * 30
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+USE_X_FORWARDED_HOST = True
+
+# Django 4+ rejects POSTs whose Origin is not in this list. Behind an ALB the
+# public https host often differs from the internal Host header, so the API
+# URL itself must be listed (scheme included). Add the frontend origin too.
+_csrf_origins = env.list("CSRF_TRUSTED_ORIGINS", default=[])  # noqa: F405
+_from_hosts = [f"https://{host}" for host in ALLOWED_HOSTS if host not in ("*",)]
+CSRF_TRUSTED_ORIGINS = list(dict.fromkeys([*_csrf_origins, *_from_hosts]))
 
 # User uploads (audio, PDFs). FileField stores a path; no migration.
 STORAGES = s3_storages(

@@ -46,6 +46,18 @@ celery -A config worker -l info
 
 The API listens on `http://127.0.0.1:8000/`. Admin: `/admin/`.
 
+### Production hosts
+
+Behind TLS termination (ALB / nginx), set the public names with schemes:
+
+```
+ALLOWED_HOSTS=myenglishway-api-prod.bookngon.com
+CSRF_TRUSTED_ORIGINS=https://myenglishway-api-prod.bookngon.com,https://your-frontend.example.com
+CORS_ALLOWED_ORIGINS=https://your-frontend.example.com
+```
+
+If `CSRF_TRUSTED_ORIGINS` is omitted, production still trusts `https://` plus each `ALLOWED_HOSTS` entry. Add the frontend origin to both `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS` when it is a different host.
+
 ### Media storage
 
 Local and tests store uploads under `media/` on disk (`DEBUG` serves them with byte-range support for seeking).
