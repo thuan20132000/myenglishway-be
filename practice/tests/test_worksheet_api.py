@@ -25,6 +25,10 @@ def transcript_url(exercise_id) -> str:
     return reverse("v1:practice-transcript", args=[exercise_id])
 
 
+def public_transcript_url(exercise_id) -> str:
+    return reverse("v1:public-practice-transcript", args=[exercise_id])
+
+
 @pytest.fixture
 def worksheet_exercise(tmp_path, settings):
     """A published exercise with audio, a PDF, a transcript and an 11-20 key."""
@@ -143,6 +147,23 @@ def test_transcript_conflicts_when_there_are_no_segments(auth_client, student, t
 
     assert response.status_code == 409
     assert response.json()["code"] == "TRANSCRIPT_NOT_AVAILABLE"
+
+
+def test_visitor_can_read_a_published_transcript(api_client, worksheet_exercise):
+    response = api_client.get(public_transcript_url(worksheet_exercise.id))
+
+    assert response.status_code == 200
+    assert [line["text"] for line in response.json()] == [
+        "Good morning.",
+        "How can I help?",
+    ]
+
+
+def test_visitor_cannot_see_an_unpublished_transcript(api_client):
+    exercise = ExerciseFactory(ready=True)
+    SegmentFactory(exercise=exercise, sequence=1, start_time=0.0, end_time=5.0)
+
+    assert api_client.get(public_transcript_url(exercise.id)).status_code == 404
 
 
 # --------------------------------------------------------------------- access

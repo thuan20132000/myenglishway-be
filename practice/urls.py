@@ -7,6 +7,7 @@ from .views import (
     PracticeSegmentDetailView,
     PracticeSegmentListView,
     PublicPracticeSegmentListView,
+    PublicWorksheetTranscriptView,
     RevealSegmentView,
     StartPracticeView,
     SubmitAnswerView,
@@ -57,6 +58,11 @@ urlpatterns = [
         "public/exercises/<int:exercise_id>/segments/",
         PublicPracticeSegmentListView.as_view(),
         name="public-practice-segments",
+    ),
+    path(
+        "public/exercises/<int:exercise_id>/transcript/",
+        PublicWorksheetTranscriptView.as_view(),
+        name="public-practice-transcript",
     ),
     path(
         "segments/<int:segment_id>/submit/",

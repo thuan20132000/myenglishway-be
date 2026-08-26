@@ -657,3 +657,48 @@ class PublicPracticeSegmentListView(generics.ListAPIView):
             status=ExerciseStatus.READY,
         )
         return exercise.segments.order_by("sequence")
+
+
+@extend_schema(
+    tags=["public"],
+    summary="Read a published exercise's transcript (no authentication)",
+    description=(
+        "The anonymous equivalent of the worksheet transcript: the full script "
+        "in order, for dictation and reading along. Checking the numbered answer "
+        "key still requires signing in.\n\n"
+        "The exercise must be published and `ready`; anything else returns 404 "
+        "rather than the 409 the authenticated endpoint gives, because an "
+        "anonymous caller is not entitled to learn that a draft exists."
+    ),
+    responses={
+        200: PracticeTranscriptSegmentSerializer(many=True),
+        404: ErrorSerializer,
+        **error_responses(409),
+    },
+)
+class PublicWorksheetTranscriptView(APIView):
+    """The script, for anyone, gated on the exercise being open to learners.
+
+    Same 404 rule as ``PublicPracticeSegmentListView``: unpublished work must
+    not distinguish itself from a missing id. Empty transcripts of a published
+    exercise are still 409 TRANSCRIPT_NOT_AVAILABLE — the exercise is already
+    known to exist from the public detail.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    serializer_class = PracticeTranscriptSegmentSerializer
+
+    def get(self, request, exercise_id: int):
+        exercise = get_object_or_404(
+            ListeningExercise,
+            pk=exercise_id,
+            is_published=True,
+            status=ExerciseStatus.READY,
+        )
+        segments = exercise.segments.order_by("sequence")
+        if not segments.exists():
+            raise TranscriptNotAvailable()
+        return Response(
+            PracticeTranscriptSegmentSerializer(segments, many=True).data
+        )
