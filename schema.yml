@@ -13,12 +13,12 @@ info:
 
         Authorization: Bearer <access_token>
 
-    Obtain a token pair from `POST /api/v1/auth/register/` or
-    `POST /api/v1/auth/login/`, and renew the access token with
-    `POST /api/v1/auth/token/refresh/`.
+    Obtain a token pair from `POST /api/v1/auth/register/`,
+    `POST /api/v1/auth/login/`, or `POST /api/v1/auth/google/`, and renew the
+    access token with `POST /api/v1/auth/token/refresh/`.
 
-    The exceptions are registration, login, token refresh, and the read-only
-    `public` endpoints, which any visitor may call without a token:
+    The exceptions are registration, login, Google sign-in, token refresh, and the
+    read-only `public` endpoints, which any visitor may call without a token:
 
     | Endpoint | Returns |
     |---|---|
@@ -94,6 +94,52 @@ info:
     Requesting a resource the caller may not see returns **404, not 403** - a 403
     would confirm that it exists.
 paths:
+  /api/v1/auth/google/:
+    post:
+      operationId: auth_google_create
+      description: |-
+        Exchange a Google ID token - obtained in the browser through Google Identity Services with the same client ID the server is configured with - for an access and refresh token.
+
+        One endpoint covers both signup and login: `created` is true when the sign-in made the account. An account is matched by Google's `sub` first, and on the very first sign-in by the token's verified email, so an existing password account is linked rather than duplicated. Tokens that are invalid, expired, minted for another client, or carry an unverified email all return 401.
+      summary: Sign in with Google
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GoogleLoginRequest'
+            examples:
+              SignInWithAGoogleIDToken:
+                value:
+                  id_token: eyJhbGciOiJSUzI1NiIsImtpZCI6IjE2M2M0...
+                summary: Sign in with a Google ID token
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/GoogleLoginRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/GoogleLoginRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoogleTokenPair'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
   /api/v1/auth/login/:
     post:
       operationId: auth_login_create
@@ -4104,6 +4150,48 @@ components:
         * `processing` - Processing
         * `ready` - Ready
         * `failed` - Failed
+    GoogleLoginRequest:
+      type: object
+      description: A Google ID token from the browser, plus an optional role for signup.
+      properties:
+        id_token:
+          type: string
+          writeOnly: true
+          minLength: 1
+        role:
+          allOf:
+          - $ref: '#/components/schemas/SelfAssignableRoleEnum'
+          default: student
+          description: |-
+            Applied only when this sign-in creates the account. Only 'student' or 'creator' may be self-assigned.
+
+            * `student` - Student
+            * `creator` - Creator
+      required:
+      - id_token
+    GoogleTokenPair:
+      type: object
+      description: Response shape for Google sign-in.
+      properties:
+        user:
+          allOf:
+          - $ref: '#/components/schemas/User'
+          readOnly: true
+        access:
+          type: string
+          readOnly: true
+        refresh:
+          type: string
+          readOnly: true
+        created:
+          type: boolean
+          readOnly: true
+          description: True when this sign-in created the account.
+      required:
+      - access
+      - created
+      - refresh
+      - user
     HistoryExercise:
       type: object
       properties:
@@ -4928,7 +5016,7 @@ components:
           maxLength: 150
         role:
           allOf:
-          - $ref: '#/components/schemas/RegisterRoleEnum'
+          - $ref: '#/components/schemas/SelfAssignableRoleEnum'
           default: student
           description: |-
             Only 'student' or 'creator' may be self-assigned.
@@ -4938,14 +5026,6 @@ components:
       required:
       - email
       - password
-    RegisterRoleEnum:
-      enum:
-      - student
-      - creator
-      type: string
-      description: |-
-        * `student` - Student
-        * `creator` - Creator
     Reveal:
       type: object
       description: The transcript, released because the learner asked to give up.
@@ -5008,6 +5088,14 @@ components:
             $ref: '#/components/schemas/SegmentReorderItemRequest'
       required:
       - ordering
+    SelfAssignableRoleEnum:
+      enum:
+      - student
+      - creator
+      type: string
+      description: |-
+        * `student` - Student
+        * `creator` - Creator
     TokenPair:
       type: object
       description: Response shape for register and login.
@@ -5514,7 +5602,7 @@ components:
       bearerFormat: JWT
 tags:
 - name: auth
-  description: Registration, login and token renewal.
+  description: Registration, login, Google sign-in and token renewal.
 - name: listening
   description: Creator-facing exercise and transcript management. Payloads here contain
     transcript text and are restricted to the owner and admins.

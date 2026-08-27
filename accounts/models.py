@@ -14,6 +14,11 @@ class Role(models.TextChoices):
         return [cls.STUDENT, cls.CREATOR]
 
 
+# The one choice set for roles a user may pick for themselves, shared by every
+# serializer that accepts a role so the API schema names it once.
+SELF_ASSIGNABLE_ROLE_CHOICES = [(r, r.label) for r in Role.self_assignable()]
+
+
 class UserManager(BaseUserManager):
     use_in_migrations = True
 
@@ -50,8 +55,15 @@ class User(AbstractBaseUser, PermissionsMixin):
     ``role`` is a single indexed column rather than a Group membership: there
     are exactly three fixed, mutually exclusive personas, they are read on
     nearly every request by permission classes, and a column keeps that check
-    join-free. PermissionsMixin is retained so Django Groups can be layered on
-    later for finer-grained or per-object rules without touching ``role``.
+    join-free.
+
+    ``google_sub`` is Google's immutable subject id, null for password-only
+    accounts. Google sign-in matches on it first and falls back to a
+    *verified* Google email only the first time, because a Google account's
+    email can change while its ``sub`` cannot.
+
+    PermissionsMixin is retained so Django Groups can be layered on later for
+    finer-grained or per-object rules without touching ``role``.
     """
 
     email = models.EmailField(unique=True, db_index=True)
@@ -61,6 +73,14 @@ class User(AbstractBaseUser, PermissionsMixin):
         choices=Role.choices,
         default=Role.STUDENT,
         db_index=True,
+    )
+    google_sub = models.CharField(
+        max_length=255,
+        unique=True,
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Google's stable subject identifier, set on first Google sign-in.",
     )
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)

@@ -11,3 +11,4 @@ pypdf>=5.0
 openai>=1.0
 celery>=5.4
 redis>=5.0
+google-auth[requests]>=2.38

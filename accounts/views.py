@@ -6,7 +6,10 @@ from rest_framework_simplejwt.views import TokenRefreshView as BaseTokenRefreshV
 
 from common.serializers import ErrorSerializer
 
+from . import services
 from .serializers import (
+    GoogleLoginSerializer,
+    GoogleTokenPairSerializer,
     LoginSerializer,
     RegisterSerializer,
     TokenPairSerializer,
@@ -75,6 +78,48 @@ class LoginView(APIView):
         serializer.is_valid(raise_exception=True)
         user = serializer.validated_data["user"]
         body = {"user": UserSerializer(user).data, **issue_token_pair(user)}
+        return Response(body, status=status.HTTP_200_OK)
+
+
+@extend_schema(
+    tags=["auth"],
+    summary="Sign in with Google",
+    description=(
+        "Exchange a Google ID token - obtained in the browser through Google "
+        "Identity Services with the same client ID the server is configured "
+        "with - for an access and refresh token.\n\n"
+        "One endpoint covers both signup and login: `created` is true when the "
+        "sign-in made the account. An account is matched by Google's `sub` "
+        "first, and on the very first sign-in by the token's verified email, so "
+        "an existing password account is linked rather than duplicated. Tokens "
+        "that are invalid, expired, minted for another client, or carry an "
+        "unverified email all return 401."
+    ),
+    request=GoogleLoginSerializer,
+    responses={200: GoogleTokenPairSerializer, 400: ErrorSerializer, 401: ErrorSerializer},
+    examples=[
+        OpenApiExample(
+            "Sign in with a Google ID token",
+            request_only=True,
+            value={"id_token": "eyJhbGciOiJSUzI1NiIsImtpZCI6IjE2M2M0..."},
+        )
+    ],
+    auth=[],
+)
+class GoogleLoginView(APIView):
+    permission_classes = [permissions.AllowAny]
+    serializer_class = GoogleLoginSerializer
+
+    def post(self, request):
+        serializer = GoogleLoginSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        identity = services.verify_google_id_token(serializer.validated_data["id_token"])
+        user, created = services.resolve_google_user(identity, serializer.validated_data["role"])
+        body = {
+            "user": UserSerializer(user).data,
+            "created": created,
+            **issue_token_pair(user),
+        }
         return Response(body, status=status.HTTP_200_OK)
 
 
