@@ -2,7 +2,7 @@ from django.contrib.auth import authenticate, password_validation
 from rest_framework import exceptions, serializers
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .models import Role, User
+from .models import SELF_ASSIGNABLE_ROLE_CHOICES, Role, User
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -17,7 +17,7 @@ class UserSerializer(serializers.ModelSerializer):
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, style={"input_type": "password"})
     role = serializers.ChoiceField(
-        choices=[(r, r.label) for r in Role.self_assignable()],
+        choices=SELF_ASSIGNABLE_ROLE_CHOICES,
         default=Role.STUDENT,
         help_text="Only 'student' or 'creator' may be self-assigned.",
     )
@@ -73,6 +73,29 @@ class TokenPairSerializer(serializers.Serializer):
     user = UserSerializer(read_only=True)
     access = serializers.CharField(read_only=True)
     refresh = serializers.CharField(read_only=True)
+
+
+class GoogleLoginSerializer(serializers.Serializer):
+    """A Google ID token from the browser, plus an optional role for signup."""
+
+    id_token = serializers.CharField(write_only=True)
+    role = serializers.ChoiceField(
+        choices=SELF_ASSIGNABLE_ROLE_CHOICES,
+        default=Role.STUDENT,
+        help_text=(
+            "Applied only when this sign-in creates the account. Only 'student' "
+            "or 'creator' may be self-assigned."
+        ),
+    )
+
+
+class GoogleTokenPairSerializer(TokenPairSerializer):
+    """Response shape for Google sign-in."""
+
+    created = serializers.BooleanField(
+        read_only=True,
+        help_text="True when this sign-in created the account.",
+    )
 
 
 class TokenRefreshResponseSerializer(serializers.Serializer):

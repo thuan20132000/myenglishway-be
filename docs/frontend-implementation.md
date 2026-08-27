@@ -62,7 +62,7 @@ knowing the words.
 
 ## 3. Authentication
 
-JWT bearer tokens. The three endpoints below and the read-only `public/`
+JWT bearer tokens. The four `POST` endpoints below and the read-only `public/`
 routes (§5) need no header; everything else does.
 
 ```
@@ -73,11 +73,23 @@ Authorization: Bearer <access_token>
 |---|---|---|
 | `POST /auth/register/` | `{email, password, full_name?, role?}` | `{user, access, refresh}` |
 | `POST /auth/login/` | `{email, password}` | `{user, access, refresh}` |
+| `POST /auth/google/` | `{id_token, role?}` | `{user, access, refresh, created}` |
 | `POST /auth/token/refresh/` | `{refresh}` | `{access}` |
 | `GET /auth/me/` | — | `User` |
 
 `role` at registration is `"student"` (default) or `"creator"`. `"admin"` is
 rejected — don't offer it in the signup UI.
+
+**Google sign-in.** `id_token` is the credential Google Identity Services hands
+you in the browser, issued for the same OAuth client ID the server is configured
+with (`GOOGLE_OAUTH_CLIENT_ID`). One endpoint covers signup and login: `created`
+is `true` when the call made the account, so you can route first-time users into
+onboarding. An existing account is matched by Google's stable subject id, and on
+the very first Google sign-in by the token's verified email — so a user who
+registered with a password and later clicks "Continue with Google" lands in the
+same account, keeping their password. `role` is applied only when the account is
+created, and is ignored otherwise. A rejected token (expired, wrong client,
+unverified email) returns `401`; treat it like a failed login.
 
 **Token lifetimes:** access 60 min, refresh 7 days (both configurable server
 side — don't hardcode; decode the JWT `exp` or refresh reactively).

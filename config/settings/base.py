@@ -110,6 +110,10 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 AUTH_USER_MODEL = "accounts.User"
 
+# Google sign-in. Public identifier, not a secret: the browser sends the same
+# client ID to Google, and the backend only uses it to check the `aud` claim.
+GOOGLE_OAUTH_CLIENT_ID = env("GOOGLE_OAUTH_CLIENT_ID", default="")
+
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
@@ -177,12 +181,12 @@ Most endpoints require a JWT:
 
     Authorization: Bearer <access_token>
 
-Obtain a token pair from `POST /api/v1/auth/register/` or
-`POST /api/v1/auth/login/`, and renew the access token with
-`POST /api/v1/auth/token/refresh/`.
+Obtain a token pair from `POST /api/v1/auth/register/`,
+`POST /api/v1/auth/login/`, or `POST /api/v1/auth/google/`, and renew the
+access token with `POST /api/v1/auth/token/refresh/`.
 
-The exceptions are registration, login, token refresh, and the read-only
-`public` endpoints, which any visitor may call without a token:
+The exceptions are registration, login, Google sign-in, token refresh, and the
+read-only `public` endpoints, which any visitor may call without a token:
 
 | Endpoint | Returns |
 |---|---|
@@ -268,7 +272,7 @@ would confirm that it exists.
         "common.openapi.add_unauthenticated_response",
     ],
     "TAGS": [
-        {"name": "auth", "description": "Registration, login and token renewal."},
+        {"name": "auth", "description": "Registration, login, Google sign-in and token renewal."},
         {
             "name": "listening",
             "description": (
@@ -294,6 +298,8 @@ would confirm that it exists.
     "ENUM_NAME_OVERRIDES": {
         "ExerciseStatusEnum": "listening.models.ExerciseStatus.choices",
         "RoleEnum": "accounts.models.Role.choices",
+        # The narrower set accepted as input wherever a user picks their own role.
+        "SelfAssignableRoleEnum": "accounts.models.SELF_ASSIGNABLE_ROLE_CHOICES",
     },
     "SWAGGER_UI_SETTINGS": {
         "deepLinking": True,
