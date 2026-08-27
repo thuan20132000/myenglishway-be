@@ -1,10 +1,13 @@
 # English Practice API
 
-Django REST API for IELTS listening dictation practice. Creators upload audio (and an optional PDF handout); Whisper transcribes it into timestamped segments. Learners play one segment at a time, type what they heard, and get a score.
+Django REST API for English practice. Two domains:
+
+- **Listening** (`/api/v1/listening/`, `/api/v1/practice/`) — creators upload audio (and an optional PDF handout); Whisper transcribes it into timestamped segments. Learners play one segment at a time, type what they heard, and get a score.
+- **Writing** (`/api/v1/writing/`) — anyone uploads a workbook PDF and keeps a private, page-by-page notebook against it. Nothing is graded; saving a page is an upsert, not a submission.
 
 **Base URL:** `/api/v1/` · **Swagger:** `/api/docs/` · **OpenAPI:** `/api/schema/`
 
-Client contract: [docs/frontend-implementation.md](docs/frontend-implementation.md).
+Client contracts: [docs/frontend-implementation.md](docs/frontend-implementation.md) (listening) · [docs/writing-frontend.md](docs/writing-frontend.md) (writing).
 
 ## Requirements
 
@@ -81,6 +84,8 @@ aws s3 sync media/ s3://your-bucket/
 
 Database rows already store paths like `audio/1/<uuid>.mp3`; they do not need rewriting.
 
+Uploads are namespaced by kind so storage rules can target them separately: `audio/`, `pdf/` (listening handouts) and `writing-pdf/` (writing workbooks). Size limits are independent — `MAX_PDF_FILE_SIZE_MB` (default 20) caps a handout, `MAX_WRITING_PDF_FILE_SIZE_MB` (default 60) caps a workbook. A workbook's page count is read with `pypdf` on upload and never taken from the request.
+
 Transcription needs `OPENAI_API_KEY` and `TRANSCRIPTION_PROVIDER=openai`. Use `stub` to develop without calling OpenAI. Whisper rejects files over 25 MB (`TRANSCRIPTION_MAX_FILE_SIZE_MB`); that cap is independent of `MAX_AUDIO_FILE_SIZE_MB`.
 
 To load a transcript by hand instead of Whisper:
@@ -122,6 +127,9 @@ Read-only `public/` routes need no token: published collections, exercises, and 
 | `accounts/` | Users, JWT register/login |
 | `listening/` | Exercises, collections, transcripts, transcription |
 | `practice/` | Dictation scoring, progress, worksheets |
-| `common/` | Shared errors, text helpers, media serving |
+| `writing/` | PDF workbooks and private per-page notebooks |
+| `common/` | Shared errors, validators, text helpers, media serving |
 | `config/` | Settings, URLs, Celery |
-| `docs/` | Frontend implementation guide |
+| `docs/` | Frontend implementation guides |
+
+curl -sv http://127.0.0.1:8005/api/docs/ -H 'Host: myenglishway-api-prod.bookngon.com'
