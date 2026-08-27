@@ -12,6 +12,7 @@ from listening.models import (
     TranscriptSegment,
 )
 from practice.models import AttemptKind, PracticeAttempt
+from writing.models import WritingExercise, WritingNotebook, WritingPage
 
 User = get_user_model()
 
@@ -146,3 +147,47 @@ class CollectionMembershipFactory(factory.django.DjangoModelFactory):
         ExerciseFactory, owner=factory.SelfAttribute("..collection.owner")
     )
     position = factory.Sequence(lambda n: n + 1)
+
+
+class WritingExerciseFactory(factory.django.DjangoModelFactory):
+    """A workbook built straight through the ORM.
+
+    ``page_count`` is set here rather than read from the file: the bytes below
+    are not a real PDF, and going through ``services.create_exercise`` is what
+    the API tests exercise. Tests that need the count to match the file build a
+    real one with ``writing.tests.conftest.pdf_upload``.
+    """
+
+    class Meta:
+        model = WritingExercise
+
+    owner = factory.SubFactory(UserFactory)
+    title = factory.Sequence(lambda n: f"Workbook {n}")
+    description = "Grammar in Use, unit 12"
+    source = "Cambridge"
+    language = "en"
+    page_count = 10
+    pdf_file = factory.django.FileField(filename="workbook.pdf", data=b"%PDF-1.4 fake")
+
+    class Params:
+        published = factory.Trait(
+            is_published=True,
+            published_at=factory.LazyFunction(timezone.now),
+        )
+
+
+class WritingNotebookFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = WritingNotebook
+
+    user = factory.SubFactory(UserFactory)
+    exercise = factory.SubFactory(WritingExerciseFactory)
+
+
+class WritingPageFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = WritingPage
+
+    notebook = factory.SubFactory(WritingNotebookFactory)
+    page_number = factory.Sequence(lambda n: n + 1)
+    body = "However, the results were inconclusive."

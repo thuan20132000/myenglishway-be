@@ -14,4 +14,5 @@ urlpatterns = [
     path("auth/", include("accounts.urls")),
     path("listening/", include("listening.urls")),
     path("practice/", include("practice.urls")),
+    path("writing/", include("writing.urls")),
 ]

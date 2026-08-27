@@ -27,6 +27,8 @@ info:
     | `GET /api/v1/listening/public/exercises/` | Published exercises (same filters as the authenticated list) |
     | `GET /api/v1/listening/public/exercises/{id}/` | One published exercise, transcript excluded |
     | `GET /api/v1/practice/public/exercises/{id}/segments/` | Segment playback windows, transcript excluded |
+    | `GET /api/v1/writing/public/exercises/` | Published writing workbooks |
+    | `GET /api/v1/writing/public/exercises/{id}/` | One published workbook with its PDF URL |
 
     They show published rows only, and anything unpublished returns 404. Scoring
     an answer, revealing a transcript and recording progress still need an account.
@@ -35,7 +37,7 @@ info:
 
     | Role | Can do |
     |---|---|
-    | `student` | Practise published exercises, submit answers, view their own attempts |
+    | `student` | Practise, submit answers, keep writing notebooks, upload own workbooks |
     | `creator` | Everything a student can, plus author, edit and publish their own exercises |
     | `admin` | Full access to every exercise |
 
@@ -83,6 +85,11 @@ info:
     | `COLLECTION_HAS_MEMBERS` | 409 | A collection of exercises cannot also hold collections |
     | `EXERCISE_ALREADY_IN_COLLECTION` | 409 | That exercise is already filed elsewhere |
     | `COLLECTION_ALREADY_PUBLISHED` | 409 | Publish called on a published collection |
+    | `INVALID_PDF_FILE` | 400 | Not a PDF, or an empty file |
+    | `PDF_FILE_TOO_LARGE` | 400 | PDF exceeds the configured size limit |
+    | `UNREADABLE_PDF_FILE` | 400 | The PDF is corrupt or encrypted; pages uncountable |
+    | `PAGE_OUT_OF_RANGE` | 400 | The page number is outside the workbook |
+    | `WRITING_EXERCISE_HAS_NOTEBOOKS` | 409 | Learners have started; the PDF is frozen |
 
     Requesting a resource the caller may not see returns **404, not 403** - a 403
     would confirm that it exists.
@@ -2745,6 +2752,54 @@ paths:
               example:
                 code: AUTHENTICATION_FAILED
                 detail: Authentication credentials were not provided.
+  /api/v1/practice/public/exercises/{exercise_id}/transcript/:
+    get:
+      operationId: practice_public_exercises_transcript_list
+      description: |-
+        The anonymous equivalent of the worksheet transcript: the full script in order, for dictation and reading along. Checking the numbered answer key still requires signing in.
+
+        The exercise must be published and `ready`; anything else returns 404 rather than the 409 the authenticated endpoint gives, because an anonymous caller is not entitled to learn that a draft exists.
+      summary: Read a published exercise's transcript (no authentication)
+      parameters:
+      - in: path
+        name: exercise_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - public
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PracticeTranscriptSegment'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
   /api/v1/practice/segments/{segment_id}/reveal/:
     post:
       operationId: practice_segments_reveal_create
@@ -2883,6 +2938,763 @@ paths:
                 $ref: '#/components/schemas/Error'
           description: ''
         '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/writing/exercises/:
+    get:
+      operationId: writing_exercises_list
+      description: Anyone sees published workbooks plus their own, in any state. Admins
+        see everything. Rows carry the caller's own progress (`has_notebook`, `pages_started`,
+        `last_page`) and never a `pdf_url` - that is on the detail view.
+      summary: List workbooks visible to the caller
+      parameters:
+      - in: query
+        name: is_published
+        schema:
+          type: boolean
+      - in: query
+        name: language
+        schema:
+          type: string
+      - in: query
+        name: mine
+        schema:
+          type: boolean
+        description: Restrict to the caller's own uploads.
+      - in: query
+        name: ordering
+        schema:
+          type: string
+        description: One of created_at, -created_at, title, -title, page_count.
+      - in: query
+        name: owner
+        schema:
+          type: number
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: page_size
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - in: query
+        name: search
+        schema:
+          type: string
+        description: Matches title, description and source.
+      tags:
+      - writing
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedWritingExerciseListList'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+    post:
+      operationId: writing_exercises_create
+      description: Any authenticated user, not just creators - uploading your own
+        book to work through is the point of this domain. The workbook starts private.
+        `page_count` is read from the PDF and ignored if sent.
+      summary: Upload a workbook
+      tags:
+      - writing
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/WritingExerciseCreateRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WritingExerciseDetail'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/writing/exercises/{exercise_id}/notebook/:
+    get:
+      operationId: writing_exercises_notebook_retrieve
+      description: |-
+        Get-or-create: the first call starts the notebook. Returns every page the learner has saved, where to resume (`last_page`), and the workbook's `pdf_url`.
+
+        Pages that have never been written to are absent rather than empty - `pages_started` counts the ones with text in them.
+      summary: Open the caller's notebook for a workbook
+      parameters:
+      - in: path
+        name: exercise_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - writing
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WritingNotebook'
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+  /api/v1/writing/exercises/{exercise_id}/notebook/complete/:
+    post:
+      operationId: writing_exercises_notebook_complete_create
+      description: |-
+        `POST` stamps `completed_at`, `DELETE` clears it. Both are idempotent, and re-completing keeps the original timestamp.
+
+        Completion is the learner's own claim: nothing infers it from how many pages have text, because a workbook is not scored.
+      summary: Mark the workbook finished, or un-finish it
+      parameters:
+      - in: path
+        name: exercise_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - writing
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WritingNotebook'
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+    delete:
+      operationId: writing_exercises_notebook_complete_destroy
+      description: |-
+        `POST` stamps `completed_at`, `DELETE` clears it. Both are idempotent, and re-completing keeps the original timestamp.
+
+        Completion is the learner's own claim: nothing infers it from how many pages have text, because a workbook is not scored.
+      summary: Mark the workbook finished, or un-finish it
+      parameters:
+      - in: path
+        name: exercise_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - writing
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WritingNotebook'
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+  /api/v1/writing/exercises/{exercise_id}/pages/{page_number}/:
+    get:
+      operationId: writing_exercises_pages_retrieve
+      description: |-
+        `PUT` is the autosave endpoint. It upserts by page number, so a client debouncing every ~500ms produces one row, not a history. Sending an empty `body` clears the page - that is a legitimate save, not a validation error.
+
+        `GET` on a page never written to returns an empty body rather than 404. A page number outside the workbook returns 400 `PAGE_OUT_OF_RANGE`.
+      summary: Read or save one page of the notebook
+      parameters:
+      - in: path
+        name: exercise_id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: page_number
+        schema:
+          type: integer
+        required: true
+      tags:
+      - writing
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WritingPage'
+              examples:
+                AutosavedPage:
+                  value:
+                    page_number: 7
+                    body: |-
+                      1. however
+                      2. nevertheless
+                    word_count: 4
+                    updated_at: '2026-08-26T10:04:12Z'
+                  summary: Autosaved page
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+    put:
+      operationId: writing_exercises_pages_update
+      description: |-
+        `PUT` is the autosave endpoint. It upserts by page number, so a client debouncing every ~500ms produces one row, not a history. Sending an empty `body` clears the page - that is a legitimate save, not a validation error.
+
+        `GET` on a page never written to returns an empty body rather than 404. A page number outside the workbook returns 400 `PAGE_OUT_OF_RANGE`.
+      summary: Read or save one page of the notebook
+      parameters:
+      - in: path
+        name: exercise_id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: page_number
+        schema:
+          type: integer
+        required: true
+      tags:
+      - writing
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WritingPageWriteRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/WritingPageWriteRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/WritingPageWriteRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WritingPage'
+              examples:
+                AutosavedPage:
+                  value:
+                    page_number: 7
+                    body: |-
+                      1. however
+                      2. nevertheless
+                    word_count: 4
+                    updated_at: '2026-08-26T10:04:12Z'
+                  summary: Autosaved page
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+  /api/v1/writing/exercises/{id}/:
+    get:
+      operationId: writing_exercises_retrieve
+      description: 'Includes `pdf_url`, which the client renders with pdf.js. It is
+        a plain media URL: fetch it *without* an `Authorization` header.'
+      summary: Retrieve one workbook
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this writing exercise.
+        required: true
+      tags:
+      - writing
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WritingExerciseDetail'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+    patch:
+      operationId: writing_exercises_partial_update
+      description: |-
+        Owner or admin only. Replacing `pdf_file` re-reads the page count and deletes the old file.
+
+        The replacement is refused with 409 once any learner has started a notebook, or while the workbook is published: page numbers are the only link between a notebook and the PDF, so a re-paginated replacement would silently misfile everything already written.
+      summary: Update workbook metadata or replace its PDF
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this writing exercise.
+        required: true
+      tags:
+      - writing
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedWritingExerciseUpdateRequest'
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WritingExerciseDetail'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+    delete:
+      operationId: writing_exercises_destroy
+      description: Owner or admin only. Cascades to each learner's notebook and pages
+        - this destroys their writing and cannot be undone. Prefer unpublishing to
+        withdraw a workbook.
+      summary: Delete a workbook and every notebook against it
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this writing exercise.
+        required: true
+      tags:
+      - writing
+      security:
+      - jwtAuth: []
+      responses:
+        '204':
+          description: No response body
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/writing/exercises/{id}/publish/:
+    post:
+      operationId: writing_exercises_publish_create
+      description: 'Owner **and** creator role. Makes the workbook readable by anyone,
+        including anonymous visitors. Notebooks stay private regardless: publishing
+        shares the PDF, never anyone''s writing.'
+      summary: Publish a workbook to the catalogue
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this writing exercise.
+        required: true
+      tags:
+      - writing
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WritingExercisePublication'
+              examples:
+                Published:
+                  value:
+                    id: 7
+                    is_published: true
+                    published_at: '2026-08-26T10:00:00Z'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/writing/exercises/{id}/unpublish/:
+    post:
+      operationId: writing_exercises_unpublish_create
+      description: Owner **and** creator role. Idempotent. Notebooks learners have
+        already started are retained and stay readable by their owners.
+      summary: Withdraw a workbook from the catalogue
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this writing exercise.
+        required: true
+      tags:
+      - writing
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WritingExercisePublication'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/writing/notebooks/:
+    get:
+      operationId: writing_notebooks_list
+      description: The "continue writing" list, most recently touched first. Page
+        bodies are omitted; open a notebook to read them.
+      summary: List the caller's notebooks
+      parameters:
+      - name: ordering
+        required: false
+        in: query
+        description: Which field to use when ordering the results.
+        schema:
+          type: string
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: page_size
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: search
+        required: false
+        in: query
+        description: A search term.
+        schema:
+          type: string
+      tags:
+      - writing
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedWritingNotebookListList'
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+  /api/v1/writing/public/exercises/:
+    get:
+      operationId: writing_public_exercises_list
+      summary: List published workbooks (no authentication)
+      parameters:
+      - in: query
+        name: is_published
+        schema:
+          type: boolean
+      - in: query
+        name: language
+        schema:
+          type: string
+      - in: query
+        name: mine
+        schema:
+          type: boolean
+      - name: ordering
+        required: false
+        in: query
+        description: Which field to use when ordering the results.
+        schema:
+          type: string
+      - in: query
+        name: owner
+        schema:
+          type: number
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: page_size
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: search
+        required: false
+        in: query
+        description: A search term.
+        schema:
+          type: string
+      tags:
+      - public
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedWritingExerciseListList'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/writing/public/exercises/{id}/:
+    get:
+      operationId: writing_public_exercises_retrieve
+      description: An unpublished workbook returns 404.
+      summary: Retrieve one published workbook
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this writing exercise.
+        required: true
+      tags:
+      - public
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WritingExerciseDetail'
+          description: ''
+        '404':
           content:
             application/json:
               schema:
@@ -3544,6 +4356,19 @@ components:
       required:
       - email
       - password
+    OwnerRef:
+      type: object
+      description: Compact owner reference embedded in exercise payloads.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        full_name:
+          type: string
+          readOnly: true
+      required:
+      - full_name
+      - id
     PaginatedCollectionListList:
       type: object
       required:
@@ -3636,6 +4461,52 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/PracticeAttempt'
+    PaginatedWritingExerciseListList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/WritingExerciseList'
+    PaginatedWritingNotebookListList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/WritingNotebookList'
     PatchedCollectionUpdateRequest:
       type: object
       description: |-
@@ -3721,6 +4592,28 @@ components:
           type: string
           minLength: 1
           description: The reference transcript for this segment.
+    PatchedWritingExerciseUpdateRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+        source:
+          type: string
+          description: Where the workbook came from - book title, publisher, unit.
+          maxLength: 255
+        language:
+          type: string
+          minLength: 1
+          maxLength: 10
+        pdf_file:
+          type: string
+          format: binary
+          description: The workbook itself. PDF only, up to 60 MB. Its page count
+            is read from the file; it is never taken from the request.
     PracticeAttempt:
       type: object
       description: One recorded attempt, as its own author sees it.
@@ -4304,6 +5197,316 @@ components:
       required:
       - number
       - text
+    WritingExerciseCreateRequest:
+      type: object
+      description: Any authenticated user may upload a workbook; it starts private.
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+        source:
+          type: string
+          description: Where the workbook came from - book title, publisher, unit.
+          maxLength: 255
+        language:
+          type: string
+          minLength: 1
+          maxLength: 10
+        pdf_file:
+          type: string
+          format: binary
+          description: The workbook itself. PDF only, up to 60 MB. Its page count
+            is read from the file; it is never taken from the request.
+      required:
+      - pdf_file
+      - title
+    WritingExerciseDetail:
+      type: object
+      description: |-
+        The workbook's URL - a plain media URL carrying no authorisation.
+
+        The client renders it with pdf.js and must fetch it *without* an
+        ``Authorization`` header, exactly like listening's audio.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+        description:
+          type: string
+          readOnly: true
+        source:
+          type: string
+          readOnly: true
+          description: Where the workbook came from - book title, publisher, unit.
+        owner:
+          allOf:
+          - $ref: '#/components/schemas/OwnerRef'
+          readOnly: true
+        pdf_url:
+          type: string
+          nullable: true
+          readOnly: true
+        page_count:
+          type: integer
+          readOnly: true
+          description: Read from the PDF on upload. Never supplied by the client.
+        language:
+          type: string
+          readOnly: true
+        is_published:
+          type: boolean
+          readOnly: true
+        published_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        has_notebook:
+          type: boolean
+          readOnly: true
+        pages_started:
+          type: integer
+          readOnly: true
+        last_page:
+          type: integer
+          nullable: true
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - description
+      - has_notebook
+      - id
+      - is_published
+      - language
+      - last_page
+      - owner
+      - page_count
+      - pages_started
+      - pdf_url
+      - published_at
+      - source
+      - title
+      - updated_at
+    WritingExerciseList:
+      type: object
+      description: 'List rows. No ``pdf_url``: media URLs live on the detail view.'
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+        source:
+          type: string
+          readOnly: true
+          description: Where the workbook came from - book title, publisher, unit.
+        owner:
+          allOf:
+          - $ref: '#/components/schemas/OwnerRef'
+          readOnly: true
+        page_count:
+          type: integer
+          readOnly: true
+          description: Read from the PDF on upload. Never supplied by the client.
+        language:
+          type: string
+          readOnly: true
+        is_published:
+          type: boolean
+          readOnly: true
+        has_notebook:
+          type: boolean
+          readOnly: true
+        pages_started:
+          type: integer
+          readOnly: true
+        last_page:
+          type: integer
+          nullable: true
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - has_notebook
+      - id
+      - is_published
+      - language
+      - last_page
+      - owner
+      - page_count
+      - pages_started
+      - source
+      - title
+    WritingExercisePublication:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        is_published:
+          type: boolean
+          readOnly: true
+        published_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+      required:
+      - id
+      - is_published
+      - published_at
+    WritingNotebook:
+      type: object
+      description: 'The whole notebook: every saved page, plus where to resume.'
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        exercise_id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+        pdf_url:
+          type: string
+          nullable: true
+          readOnly: true
+        page_count:
+          type: integer
+          readOnly: true
+        pages_started:
+          type: integer
+          readOnly: true
+        last_page:
+          type: integer
+          readOnly: true
+          description: Where the learner left off, for resuming.
+        completed_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+          description: Set when the learner marks the workbook done. Never inferred.
+        pages:
+          type: array
+          items:
+            $ref: '#/components/schemas/WritingPage'
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - completed_at
+      - created_at
+      - exercise_id
+      - id
+      - last_page
+      - page_count
+      - pages
+      - pages_started
+      - pdf_url
+      - title
+      - updated_at
+    WritingNotebookList:
+      type: object
+      description: '"Continue writing" rows. No page bodies - just where to pick up.'
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        exercise_id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+        source:
+          type: string
+          readOnly: true
+        page_count:
+          type: integer
+          readOnly: true
+        pages_started:
+          type: integer
+          readOnly: true
+        last_page:
+          type: integer
+          readOnly: true
+          description: Where the learner left off, for resuming.
+        completed_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+          description: Set when the learner marks the workbook done. Never inferred.
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - completed_at
+      - exercise_id
+      - id
+      - last_page
+      - page_count
+      - pages_started
+      - source
+      - title
+      - updated_at
+    WritingPage:
+      type: object
+      properties:
+        page_number:
+          type: integer
+          readOnly: true
+        body:
+          type: string
+          readOnly: true
+        word_count:
+          type: integer
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - body
+      - page_number
+      - updated_at
+      - word_count
+    WritingPageWriteRequest:
+      type: object
+      description: The autosave body. Blank is a real value - the learner cleared
+        the page.
+      properties:
+        body:
+          type: string
+      required:
+      - body
   securitySchemes:
     jwtAuth:
       type: http
@@ -4318,3 +5521,6 @@ tags:
 - name: practice
   description: Learner-facing dictation. Segment representations never include transcript
     text; it is released on submit or reveal.
+- name: writing
+  description: 'PDF workbooks and the private notebooks learners keep against them.
+    Nothing is scored: a page is saved, not submitted.'

@@ -14,6 +14,7 @@ from rest_framework import serializers
 
 from accounts.serializers import UserSerializer
 from common import errors
+from common.serializers import absolute_media_url
 
 from .models import (
     ExerciseAnswer,
@@ -114,15 +115,7 @@ class ExerciseMediaUrlMixin(serializers.Serializer):
     pdf_url = serializers.SerializerMethodField()
 
     def _absolute_media_url(self, file_field) -> str | None:
-        if not file_field:
-            return None
-        url = file_field.url
-        # S3 (and any CDN domain) already returns an absolute URL. Prefixing
-        # it with the API origin would break the player.
-        if url.startswith(("http://", "https://")):
-            return url
-        request = self.context.get("request")
-        return request.build_absolute_uri(url) if request else url
+        return absolute_media_url(file_field, self.context.get("request"))
 
     def get_audio_url(self, obj) -> str | None:
         return self._absolute_media_url(obj.audio_file)

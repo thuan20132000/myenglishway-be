@@ -6,6 +6,11 @@ authority, and `/api/docs/` renders it interactively.
 
 **Base URL:** `/api/v1/` · **Schema:** `/api/schema/` · **Swagger:** `/api/docs/`
 
+This guide covers **listening practice** (`/listening/`, `/practice/`). Writing
+practice is a separate domain with its own contract:
+[writing-frontend.md](writing-frontend.md). Auth (§3), the error envelope (§8)
+and the 404-not-403 rule are shared; the rest is not.
+
 ---
 
 ## 1. What the product does

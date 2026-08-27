@@ -56,6 +56,7 @@ LOCAL_APPS = [
     "accounts",
     "listening",
     "practice",
+    "writing",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -190,6 +191,8 @@ The exceptions are registration, login, token refresh, and the read-only
 | `GET /api/v1/listening/public/exercises/` | Published exercises (same filters as the authenticated list) |
 | `GET /api/v1/listening/public/exercises/{id}/` | One published exercise, transcript excluded |
 | `GET /api/v1/practice/public/exercises/{id}/segments/` | Segment playback windows, transcript excluded |
+| `GET /api/v1/writing/public/exercises/` | Published writing workbooks |
+| `GET /api/v1/writing/public/exercises/{id}/` | One published workbook with its PDF URL |
 
 They show published rows only, and anything unpublished returns 404. Scoring
 an answer, revealing a transcript and recording progress still need an account.
@@ -198,7 +201,7 @@ an answer, revealing a transcript and recording progress still need an account.
 
 | Role | Can do |
 |---|---|
-| `student` | Practise published exercises, submit answers, view their own attempts |
+| `student` | Practise, submit answers, keep writing notebooks, upload own workbooks |
 | `creator` | Everything a student can, plus author, edit and publish their own exercises |
 | `admin` | Full access to every exercise |
 
@@ -246,6 +249,11 @@ Everything else returns a stable machine-readable code:
 | `COLLECTION_HAS_MEMBERS` | 409 | A collection of exercises cannot also hold collections |
 | `EXERCISE_ALREADY_IN_COLLECTION` | 409 | That exercise is already filed elsewhere |
 | `COLLECTION_ALREADY_PUBLISHED` | 409 | Publish called on a published collection |
+| `INVALID_PDF_FILE` | 400 | Not a PDF, or an empty file |
+| `PDF_FILE_TOO_LARGE` | 400 | PDF exceeds the configured size limit |
+| `UNREADABLE_PDF_FILE` | 400 | The PDF is corrupt or encrypted; pages uncountable |
+| `PAGE_OUT_OF_RANGE` | 400 | The page number is outside the workbook |
+| `WRITING_EXERCISE_HAS_NOTEBOOKS` | 409 | Learners have started; the PDF is frozen |
 
 Requesting a resource the caller may not see returns **404, not 403** - a 403
 would confirm that it exists.
@@ -273,6 +281,13 @@ would confirm that it exists.
             "description": (
                 "Learner-facing dictation. Segment representations never include "
                 "transcript text; it is released on submit or reveal."
+            ),
+        },
+        {
+            "name": "writing",
+            "description": (
+                "PDF workbooks and the private notebooks learners keep against "
+                "them. Nothing is scored: a page is saved, not submitted."
             ),
         },
     ],
@@ -308,6 +323,11 @@ ALLOWED_AUDIO_CONTENT_TYPES = [
 MAX_PDF_FILE_SIZE_MB = env.int("MAX_PDF_FILE_SIZE_MB", 20)
 ALLOWED_PDF_EXTENSIONS = [".pdf"]
 ALLOWED_PDF_CONTENT_TYPES = ["application/pdf", "application/x-pdf"]
+
+# A writing workbook is a whole book, not a two-page handout, so it gets its
+# own ceiling. MAX_PDF_FILE_SIZE_MB still governs listening question sheets.
+MAX_WRITING_PDF_FILE_SIZE_MB = env.int("MAX_WRITING_PDF_FILE_SIZE_MB", 60)
+MAX_WRITING_PAGE_LENGTH = env.int("MAX_WRITING_PAGE_LENGTH", 20000)
 
 SUPPORTED_LANGUAGES = ["en"]
 
