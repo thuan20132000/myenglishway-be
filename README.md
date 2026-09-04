@@ -18,6 +18,13 @@ Client contracts: [docs/frontend-implementation.md](docs/frontend-implementation
 ## Setup
 
 ```bash
+make setup
+make superuser
+```
+
+`make setup` creates `env/`, installs dependencies, copies `.env.example` to `.env` if needed, creates the Postgres database, and migrates. Equivalent by hand:
+
+```bash
 python3.11 -m venv env
 source env/bin/activate
 pip install -r requirements-dev.txt
@@ -27,6 +34,8 @@ createdb english_practice
 python manage.py migrate
 python manage.py createsuperuser
 ```
+
+`make help` lists every target. Commands use `env/bin` so the venv does not have to be activated.
 
 `.env` is django-environ. Put comments on their own lines — an inline `#` (especially one with an apostrophe) is treated as part of the value.
 
@@ -39,12 +48,10 @@ Three processes for local development:
 brew services start redis
 
 # 2. API
-source env/bin/activate
-python manage.py runserver
+make run
 
 # 3. Worker (separate terminal)
-source env/bin/activate
-celery -A config worker -l info
+make worker
 ```
 
 The API listens on `http://127.0.0.1:8000/`. Admin: `/admin/`.
@@ -97,15 +104,11 @@ python manage.py load_transcript <exercise_id> listening/fixtures/sample_transcr
 ## Tests
 
 ```bash
-source env/bin/activate
-python -m pytest -q
+make test
+make lint
 ```
 
-Tests use `config.settings.test` (stub transcription, eager Celery). No Redis or API key required.
-
-```bash
-ruff check .
-```
+Tests use `config.settings.test` (stub transcription, eager Celery). No Redis or API key required. `make schema` regenerates the committed OpenAPI file; `make check` runs lint and tests together.
 
 ## Auth
 
