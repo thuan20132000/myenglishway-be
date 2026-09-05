@@ -16,8 +16,20 @@ env = environ.Env(
     DEBUG=(bool, False),
     SECRET_KEY=(str, "insecure-dev-key-change-me"),
     ALLOWED_HOSTS=(list, ["localhost", "127.0.0.1"]),
-    CORS_ALLOWED_ORIGINS=(list, ["http://localhost:3000"]),
-    CSRF_TRUSTED_ORIGINS=(list, ["http://localhost:3000", "http://127.0.0.1:8000"]),
+    # localhost and 127.0.0.1 are different origins. The Next app is opened
+    # as either, so both must be listed or the browser drops the response.
+    CORS_ALLOWED_ORIGINS=(
+        list,
+        ["http://localhost:3000", "http://127.0.0.1:3000"],
+    ),
+    CSRF_TRUSTED_ORIGINS=(
+        list,
+        [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://127.0.0.1:8000",
+        ],
+    ),
     USE_S3=(bool, False),
     AWS_S3_QUERYSTRING_AUTH=(bool, False),
 )
