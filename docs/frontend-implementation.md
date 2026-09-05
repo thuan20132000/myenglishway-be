@@ -30,7 +30,7 @@ publish  ───────────────────────�
                                         ↓
                                      score + corrections
                                         ↓
-                                     progress / history
+                                     progress / history / leaderboard
 ```
 
 ---
@@ -117,6 +117,7 @@ on reload.
 | Play audio, read segment timings | ✅ | ✅ | ✅ | ✅ |
 | Submit answers / reveal / worksheet key | ❌ | ✅ | ✅ | ✅ |
 | See own attempts / progress / history | ❌ | ✅ | ✅ | ✅ |
+| See the practice leaderboard | ❌ | ✅ | ✅ | ✅ |
 | Create & edit own exercises | ❌ | ❌ | ✅ | ✅ |
 | See transcripts (`/listening/` routes) | ❌ | ❌ | own only | all |
 | Publish / unpublish | ❌ | ❌ | own only | all |
@@ -306,8 +307,8 @@ A collection never has both, so branch on whichever is non-zero.
 They can browse, open an exercise, load its audio, open the question PDF, and
 fetch the segment timings — enough to play a segment and type an answer
 locally. They **cannot** be scored: `submit/`, `reveal/`, `start/`, `progress/`,
-`history/` and the worksheet answer key all require a token, because all of them
-read or write attempts belonging to a user.
+`history/`, `leaderboard/` and the worksheet answer key all require a token,
+because all of them read or write attempts belonging to a user.
 
 That gives you a natural signup wall. Recommended shape:
 
@@ -441,7 +442,7 @@ Two behaviours to surface in the UI:
 
 `GET` / `PUT /listening/exercises/{id}/answers/` — **owner or admin only, for
 reads as well as writes.** This is the solution to the question sheet; learners
-read the same answers through the practice API instead (§7.7).
+read the same answers through the practice API instead (§7.8).
 
 ```json
 PUT { "answer_key": "11. library\n12. 9.30\n13. blue" }
@@ -497,7 +498,7 @@ two actions.
 
 ## 7. Learner flow
 
-There are two ways to practise the same exercise. **Worksheet mode** (§7.7) is
+There are two ways to practise the same exercise. **Worksheet mode** (§7.8) is
 the paper workflow: question sheet open, audio playing straight through, fill in
 an answer column, then read the key. **Dictation mode** (§7.2–7.6) is the
 segment-by-segment transcription drill with server-side scoring. They share
@@ -718,9 +719,125 @@ Filters: `exercise`, `segment`, `kind` (`submission`|`reveal`), `date_from`,
 `date_to`. Always the caller's own; another learner's attempts are not
 addressable.
 
+### 7.7 Leaderboard
+
+`GET /practice/leaderboard/` — **paginated**, one row per learner who has at
+least one scored dictation submission. **Requires a token.** There is no
+`public/` twin: gate the screen on login, and treat `401` like history.
+
+Ranks by **`practice_count`**: how many times the learner submitted an answer.
+Retries count; reveals do not. Coverage (`attempted_segments`) and quality
+(`average_score`) are extra columns, not the sort key.
+
+```
+GET /practice/leaderboard/?date_from=2026-09-01&date_to=2026-09-04&page=1&page_size=20
+Authorization: Bearer <access_token>
+```
+
+```json
+{
+  "count": 42,
+  "next": "http://localhost:8000/api/v1/practice/leaderboard/?page=2",
+  "previous": null,
+  "results": [
+    {
+      "rank": 1,
+      "user": { "id": 12, "full_name": "Ada Nguyen" },
+      "practice_count": 340,
+      "attempted_segments": 86,
+      "completed_segments": 71,
+      "average_score": 88.2,
+      "last_practiced_at": "2026-09-04T12:01:00Z"
+    }
+  ],
+  "me": {
+    "rank": 7,
+    "user": { "id": 3, "full_name": "Lin Tran" },
+    "practice_count": 120,
+    "attempted_segments": 40,
+    "completed_segments": 31,
+    "average_score": 81.0,
+    "last_practiced_at": "2026-09-04T09:10:00Z"
+  }
+}
+```
+
+Filters and pagination:
+
+| Param | Meaning |
+|---|---|
+| `date_from`, `date_to` | Inclusive `YYYY-MM-DD`, **UTC calendar date** of `created_at`. Omit both for all-time. |
+| `page` | 1-based. Default `1`. |
+| `page_size` | Default `20`, max `100`. |
+
+`date_from` after `date_to` is `400 VALIDATION_ERROR` with a `date_from` field
+error — same envelope as history. For "This week" / "This month" chips, compute
+the two dates in UTC on the client; the API has no `period=` shortcut.
+
+**Render `rank` as given.** Equal `practice_count` shares a rank (`1, 2, 2, 4`).
+Do not replace it with the row index. Order of `results` is already
+highest-count first, with `user.id` as a stable tie-break.
+
+**`me` is a sticky row, not a second list.** It is the caller's standing even
+when they are off the current page. `null` when they have zero submissions in
+the window (the board can still have other people). Recommended layout:
+
+1. Table from `results`. Highlight the row whose `user.id === me.user.id`
+   when they are on this page; do not paint them twice.
+2. A pinned bar from `me` ("You · #7 · 120 submissions") so they still see
+   their place on page 1 of a long board.
+3. Empty `results` and `me === null` → "No one has practised yet."
+4. Non-empty `results` and `me === null` → show the board, plus "Submit an
+   answer to join."
+
+**`user` is `id` + `full_name` only.** Email is never in this payload — do not
+reach for `User` from `/auth/me/` to fill other people's names. `full_name` may
+be `""`; show a fallback such as "Learner", not a blank cell. Compare identity
+with `me.user.id` or `/auth/me/`'s `id`, never with email.
+
+Column meanings (same definitions as §7.6):
+
+| Field | Show as | Notes |
+|---|---|---|
+| `rank` | `#1` | Shared on ties |
+| `user.full_name` | Display name | Fallback when blank |
+| `practice_count` | Submissions | The ranking metric; retries raise it |
+| `attempted_segments` | Segments tried | Distinct segments with ≥1 submission |
+| `completed_segments` | Completed | Best score ≥ threshold (default 80) |
+| `average_score` | Average | Mean of each segment's **best** score; one decimal |
+| `last_practiced_at` | Last practice | ISO-8601 UTC |
+
+Retrying one segment raises `practice_count` by 1 and can only raise
+`average_score`; `attempted_segments` stays the same. Writing notebooks are
+not on this board.
+
+Suggested types:
+
+```ts
+type LeaderboardUser = { id: number; full_name: string };
+
+type LeaderboardEntry = {
+  rank: number;
+  user: LeaderboardUser;
+  practice_count: number;
+  attempted_segments: number;
+  completed_segments: number;
+  average_score: number | null;
+  last_practiced_at: string;
+};
+
+type LeaderboardPage = {
+  count: number;
+  next: string | null;
+  previous: string | null;
+  results: LeaderboardEntry[];
+  me: LeaderboardEntry | null;
+};
+```
+
 ---
 
-### 7.7 Worksheet mode
+### 7.8 Worksheet mode
 
 Three GETs, none of which record anything. All are gated by the same rule as the
 rest of practice: published, `ready`, or you own it.
@@ -817,10 +934,12 @@ say not found.
   entirely, so a creator hitting them sees the learner view of their own draft
   — which is to say, a 404. Switch the base path on login, don't just add the
   header (§5).
-- **Pagination is inconsistent by design.** Exercise list, history and attempts
-  are paginated objects. Segment lists (both creator and practice) are **bare
-  arrays** — a transcript is read whole. Don't write one generic list handler
-  that assumes `.results`.
+- **Pagination is inconsistent by design.** Exercise list, history, attempts
+  and the leaderboard are paginated objects. Segment lists (both creator and
+  practice) are **bare arrays** — a transcript is read whole. Don't write one
+  generic list handler that assumes `.results`. The leaderboard page also
+  carries `me` beside `results`; a list helper that only unwraps `results`
+  will drop the caller's sticky row.
 - **The schema under-documents the exercise detail response.** `segments`,
   `processing_error`, `processing_started_at` and `transcription_provider` are
   added conditionally for the owner/admin and **do not appear in `schema.yml`**.
@@ -846,6 +965,9 @@ say not found.
   can badge them without a detail fetch.
 - **`duration` may be `null`** on any unprocessed exercise. Guard your player.
 - **`score` is `null` on reveal attempts** in `/practice/attempts/`.
+- **Leaderboard `user` is `id` + `full_name` only.** Never email. `me` can be
+  `null` while `results` is not; `rank` is shared on ties (`1, 2, 2, 4`) — do
+  not replace it with the row index.
 - **Segment `sequence` starts at 1**, and reorder requires the complete set.
 
 ---
@@ -861,7 +983,8 @@ say not found.
 3. **Practice loop** — the core product: `start/` → audio player with segment
    seeking → answer box → submit → diff rendering. Build this before any
    creator UI; it is where the design risk is.
-4. **Progress & history** — progress bar on the practice screen, history list.
+4. **Progress, history & leaderboard** — progress bar on the practice screen,
+   history list, and the ranked board from `GET /practice/leaderboard/` (§7.7).
 5. **Creator: upload + status polling** — the upload form and the
    `processing → ready|failed` state machine with retry.
 6. **Creator: segment editor** — table with inline text/timing edits,

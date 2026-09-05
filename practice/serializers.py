@@ -233,3 +233,47 @@ class PracticeAttemptSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = fields
+
+
+class LeaderboardQuerySerializer(serializers.Serializer):
+    """Validates leaderboard query parameters so bad dates fail cleanly."""
+
+    date_from = serializers.DateField(required=False)
+    date_to = serializers.DateField(required=False)
+
+    def validate(self, attrs):
+        date_from, date_to = attrs.get("date_from"), attrs.get("date_to")
+        if date_from and date_to and date_from > date_to:
+            raise serializers.ValidationError(
+                {"date_from": "date_from must not be later than date_to."}
+            )
+        return attrs
+
+
+class LeaderboardUserSerializer(serializers.Serializer):
+    """A learner as they appear on the board. Email is deliberately absent."""
+
+    id = serializers.IntegerField(read_only=True)
+    full_name = serializers.CharField(read_only=True)
+
+
+class LeaderboardEntrySerializer(serializers.Serializer):
+    """One learner's standing, ranked by scored submission count."""
+
+    rank = serializers.IntegerField(read_only=True)
+    user = LeaderboardUserSerializer(read_only=True)
+    practice_count = serializers.IntegerField(read_only=True)
+    attempted_segments = serializers.IntegerField(read_only=True)
+    completed_segments = serializers.IntegerField(read_only=True)
+    average_score = serializers.FloatField(read_only=True, allow_null=True)
+    last_practiced_at = serializers.DateTimeField(read_only=True)
+
+
+class LeaderboardPageSerializer(serializers.Serializer):
+    """Paginated board plus the caller's own row, even when they are off-page."""
+
+    count = serializers.IntegerField(read_only=True)
+    next = serializers.CharField(read_only=True, allow_null=True)
+    previous = serializers.CharField(read_only=True, allow_null=True)
+    results = LeaderboardEntrySerializer(many=True, read_only=True)
+    me = LeaderboardEntrySerializer(read_only=True, allow_null=True)

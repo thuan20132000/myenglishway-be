@@ -64,6 +64,7 @@ class PracticeAttempt(models.Model):
             models.Index(fields=["user", "exercise", "-created_at"], name="att_user_ex_idx"),
             models.Index(fields=["user", "segment", "-created_at"], name="att_user_seg_idx"),
             models.Index(fields=["user", "kind"], name="att_user_kind_idx"),
+            models.Index(fields=["kind", "-created_at"], name="att_kind_created_idx"),
         ]
         constraints = [
             models.CheckConstraint(

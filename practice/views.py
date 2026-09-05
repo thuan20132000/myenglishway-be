@@ -9,12 +9,14 @@ from common.openapi import error_responses
 from common.serializers import ErrorSerializer
 from listening.models import ExerciseStatus, ListeningExercise, TranscriptSegment
 
-from .permissions import CanPracticeExercise
 from .filters import PracticeAttemptFilterSet
 from .models import PracticeAttempt
+from .permissions import CanPracticeExercise
 from .serializers import (
     HistoryItemSerializer,
     HistoryQuerySerializer,
+    LeaderboardPageSerializer,
+    LeaderboardQuerySerializer,
     PracticeAttemptSerializer,
     PracticeResultSerializer,
     PracticeSegmentProgressSerializer,
@@ -32,8 +34,10 @@ from .services import (
     attempted_segment_count,
     exercise_progress,
     history_details,
+    leaderboard_details,
     next_segment,
     practice_history,
+    practice_leaderboard,
     practice_segments,
     reveal_segment,
     submit_answer,
@@ -448,6 +452,108 @@ class PracticeHistoryView(generics.GenericAPIView):
         if page is not None:
             return self.get_paginated_response(details)
         return Response(details)
+
+
+@extend_schema(
+    tags=["practice"],
+    summary="Practice leaderboard, ranked by submission count",
+    description=(
+        "Ranks learners by the number of scored dictation submissions. "
+        "Reveals are excluded, so giving up cannot raise a rank; retries count. "
+        "`attempted_segments`, `completed_segments` and `average_score` use the "
+        "same definitions as progress and history.\n\n"
+        "`me` is the calling user's row even when they are not on the current "
+        "page, or null when they have no submissions in the window. User "
+        "payloads contain `id` and `full_name` only."
+    ),
+    parameters=[
+        OpenApiParameter("date_from", str, description="Inclusive lower bound, YYYY-MM-DD."),
+        OpenApiParameter("date_to", str, description="Inclusive upper bound, YYYY-MM-DD."),
+        OpenApiParameter(
+            "page", int, description="A page number within the paginated result set."
+        ),
+        OpenApiParameter("page_size", int, description="Number of results to return per page."),
+    ],
+    responses={200: LeaderboardPageSerializer, **error_responses(400)},
+    examples=[
+        OpenApiExample(
+            "Two learners",
+            response_only=True,
+            value={
+                "count": 2,
+                "next": None,
+                "previous": None,
+                "results": [
+                    {
+                        "rank": 1,
+                        "user": {"id": 12, "full_name": "Ada Nguyen"},
+                        "practice_count": 340,
+                        "attempted_segments": 86,
+                        "completed_segments": 71,
+                        "average_score": 88.2,
+                        "last_practiced_at": "2026-08-19T10:06:00Z",
+                    },
+                    {
+                        "rank": 2,
+                        "user": {"id": 3, "full_name": "Lin Tran"},
+                        "practice_count": 120,
+                        "attempted_segments": 40,
+                        "completed_segments": 31,
+                        "average_score": 81.0,
+                        "last_practiced_at": "2026-08-19T09:10:00Z",
+                    },
+                ],
+                "me": {
+                    "rank": 2,
+                    "user": {"id": 3, "full_name": "Lin Tran"},
+                    "practice_count": 120,
+                    "attempted_segments": 40,
+                    "completed_segments": 31,
+                    "average_score": 81.0,
+                    "last_practiced_at": "2026-08-19T09:10:00Z",
+                },
+            },
+        )
+    ],
+)
+class PracticeLeaderboardView(generics.GenericAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = LeaderboardPageSerializer
+    # Ranked rows are annotated User instances, not PracticeAttempt; the empty
+    # queryset exists only so schema generation can introspect the view.
+    queryset = PracticeAttempt.objects.none()
+
+    def get(self, request):
+        query = LeaderboardQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        filters = query.validated_data
+        date_from = filters.get("date_from")
+        date_to = filters.get("date_to")
+
+        rows = practice_leaderboard(date_from=date_from, date_to=date_to)
+
+        page = self.paginate_queryset(rows)
+        page_rows = list(page if page is not None else rows)
+        details = leaderboard_details(
+            page_rows, date_from=date_from, date_to=date_to
+        )
+
+        me_row = next((row for row in page_rows if row.pk == request.user.pk), None)
+        if me_row is None:
+            me_row = rows.filter(pk=request.user.pk).first()
+            me = (
+                leaderboard_details([me_row], date_from=date_from, date_to=date_to)[0]
+                if me_row is not None
+                else None
+            )
+        else:
+            me = next(entry for entry in details if entry["user"]["id"] == request.user.pk)
+
+        if page is not None:
+            response = self.get_paginated_response(details)
+            response.data["me"] = me
+            return response
+        return Response({"results": details, "me": me})
 
 
 @extend_schema(

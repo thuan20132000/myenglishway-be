@@ -4,6 +4,7 @@ from .views import (
     ExerciseProgressView,
     PracticeAttemptListView,
     PracticeHistoryView,
+    PracticeLeaderboardView,
     PracticeSegmentDetailView,
     PracticeSegmentListView,
     PublicPracticeSegmentListView,
@@ -53,6 +54,7 @@ urlpatterns = [
         name="practice-transcript",
     ),
     path("history/", PracticeHistoryView.as_view(), name="practice-history"),
+    path("leaderboard/", PracticeLeaderboardView.as_view(), name="practice-leaderboard"),
     path("attempts/", PracticeAttemptListView.as_view(), name="practice-attempts"),
     path(
         "public/exercises/<int:exercise_id>/segments/",

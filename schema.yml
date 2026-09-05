@@ -2730,6 +2730,97 @@ paths:
               example:
                 code: AUTHENTICATION_FAILED
                 detail: Authentication credentials were not provided.
+  /api/v1/practice/leaderboard/:
+    get:
+      operationId: practice_leaderboard_retrieve
+      description: |-
+        Ranks learners by the number of scored dictation submissions. Reveals are excluded, so giving up cannot raise a rank; retries count. `attempted_segments`, `completed_segments` and `average_score` use the same definitions as progress and history.
+
+        `me` is the calling user's row even when they are not on the current page, or null when they have no submissions in the window. User payloads contain `id` and `full_name` only.
+      summary: Practice leaderboard, ranked by submission count
+      parameters:
+      - in: query
+        name: date_from
+        schema:
+          type: string
+        description: Inclusive lower bound, YYYY-MM-DD.
+      - in: query
+        name: date_to
+        schema:
+          type: string
+        description: Inclusive upper bound, YYYY-MM-DD.
+      - in: query
+        name: page
+        schema:
+          type: integer
+        description: A page number within the paginated result set.
+      - in: query
+        name: page_size
+        schema:
+          type: integer
+        description: Number of results to return per page.
+      tags:
+      - practice
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LeaderboardPage'
+              examples:
+                TwoLearners:
+                  value:
+                    count: 2
+                    next: null
+                    previous: null
+                    results:
+                    - rank: 1
+                      user:
+                        id: 12
+                        full_name: Ada Nguyen
+                      practice_count: 340
+                      attempted_segments: 86
+                      completed_segments: 71
+                      average_score: 88.2
+                      last_practiced_at: '2026-08-19T10:06:00Z'
+                    - rank: 2
+                      user:
+                        id: 3
+                        full_name: Lin Tran
+                      practice_count: 120
+                      attempted_segments: 40
+                      completed_segments: 31
+                      average_score: 81.0
+                      last_practiced_at: '2026-08-19T09:10:00Z'
+                    me:
+                      rank: 2
+                      user:
+                        id: 3
+                        full_name: Lin Tran
+                      practice_count: 120
+                      attempted_segments: 40
+                      completed_segments: 31
+                      average_score: 81.0
+                      last_practiced_at: '2026-08-19T09:10:00Z'
+                  summary: Two learners
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
   /api/v1/practice/public/exercises/{exercise_id}/segments/:
     get:
       operationId: practice_public_exercises_segments_list
@@ -4250,6 +4341,87 @@ components:
       description: |-
         * `submission` - Submission
         * `reveal` - Reveal
+    LeaderboardEntry:
+      type: object
+      description: One learner's standing, ranked by scored submission count.
+      properties:
+        rank:
+          type: integer
+          readOnly: true
+        user:
+          allOf:
+          - $ref: '#/components/schemas/LeaderboardUser'
+          readOnly: true
+        practice_count:
+          type: integer
+          readOnly: true
+        attempted_segments:
+          type: integer
+          readOnly: true
+        completed_segments:
+          type: integer
+          readOnly: true
+        average_score:
+          type: number
+          format: double
+          readOnly: true
+          nullable: true
+        last_practiced_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - attempted_segments
+      - average_score
+      - completed_segments
+      - last_practiced_at
+      - practice_count
+      - rank
+      - user
+    LeaderboardPage:
+      type: object
+      description: Paginated board plus the caller's own row, even when they are off-page.
+      properties:
+        count:
+          type: integer
+          readOnly: true
+        next:
+          type: string
+          readOnly: true
+          nullable: true
+        previous:
+          type: string
+          readOnly: true
+          nullable: true
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/LeaderboardEntry'
+          readOnly: true
+        me:
+          allOf:
+          - $ref: '#/components/schemas/LeaderboardEntry'
+          readOnly: true
+          nullable: true
+      required:
+      - count
+      - me
+      - next
+      - previous
+      - results
+    LeaderboardUser:
+      type: object
+      description: A learner as they appear on the board. Email is deliberately absent.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        full_name:
+          type: string
+          readOnly: true
+      required:
+      - full_name
+      - id
     ListeningExerciseCreateRequest:
       type: object
       description: Create input. ``owner``, ``status`` and ``is_published`` are derived.
