@@ -109,6 +109,54 @@ class ListeningExercise(TimeStampedModel):
         return self.is_published and self.status == ExerciseStatus.READY
 
 
+class ListeningNotebook(TimeStampedModel):
+    """One learner's notes on one listening exercise.
+
+    Unique per (user, exercise): notes are a document you keep editing, not a
+    run you repeat, so saves upsert rather than append. There are no pages —
+    the whole recording is one ``body``. Nothing here is scored, and nothing
+    writes a ``PracticeAttempt``.
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="listening_notebooks",
+    )
+    exercise = models.ForeignKey(
+        ListeningExercise,
+        on_delete=models.CASCADE,
+        related_name="notebooks",
+    )
+    body = models.TextField(blank=True)
+    word_count = models.PositiveIntegerField(default=0, editable=False)
+    completed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Set when the learner marks the notes done. Never inferred.",
+    )
+
+    class Meta:
+        ordering = ["-updated_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "exercise"],
+                name="listening_notebook_unique_user_exercise",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.user_id} on {self.exercise_id}"
+
+    @property
+    def is_complete(self) -> bool:
+        return self.completed_at is not None
+
+    def save(self, *args, **kwargs):
+        self.word_count = len(tokenize(self.body))
+        super().save(*args, **kwargs)
+
+
 class ExerciseAnswer(TimeStampedModel):
     """One entry of the creator's answer key for the PDF question sheet.
 

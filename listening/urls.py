@@ -3,6 +3,11 @@ from rest_framework.routers import DefaultRouter
 
 from .answer_views import ExerciseAnswerKeyView
 from .collection_views import ExerciseCollectionViewSet
+from .notebook_views import (
+    ListeningNotebookCompleteView,
+    ListeningNotebookListView,
+    ListeningNotebookView,
+)
 from .public_views import PublicCollectionViewSet, PublicExerciseViewSet
 from .segment_views import ExerciseSegmentViewSet, SegmentViewSet
 from .views import ListeningExerciseViewSet
@@ -25,6 +30,17 @@ exercise_segments = ExerciseSegmentViewSet.as_view({"get": "list", "post": "crea
 exercise_segments_reorder = ExerciseSegmentViewSet.as_view({"post": "reorder"})
 
 urlpatterns = [
+    path(
+        "exercises/<int:exercise_id>/notebook/",
+        ListeningNotebookView.as_view(),
+        name="listening-notebook",
+    ),
+    path(
+        "exercises/<int:exercise_id>/notebook/complete/",
+        ListeningNotebookCompleteView.as_view(),
+        name="listening-notebook-complete",
+    ),
+    path("notebooks/", ListeningNotebookListView.as_view(), name="listening-notebook-list"),
     path(
         "exercises/<int:exercise_id>/segments/",
         exercise_segments,

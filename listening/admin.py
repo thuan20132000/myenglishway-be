@@ -34,6 +34,7 @@ from .models import (
     ExerciseAnswer,
     ExerciseCollection,
     ListeningExercise,
+    ListeningNotebook,
     TranscriptSegment,
 )
 from .services import publish_exercise, unpublish_exercise
@@ -386,6 +387,29 @@ class ExerciseCollectionAdmin(admin.ModelAdmin):
     @admin.action(description="Unpublish the selected collections")
     def do_unpublish(self, request, queryset):
         _run(self, request, queryset, unpublish_collection, "unpublished")
+
+
+@admin.register(ListeningNotebook)
+class ListeningNotebookAdmin(admin.ModelAdmin):
+    """Metadata only — the body is never shown, even to staff."""
+
+    list_display = ("user", "exercise", "word_count", "completed_at", "updated_at")
+    list_filter = ("completed_at",)
+    search_fields = ("user__email", "exercise__title")
+    readonly_fields = (
+        "user",
+        "exercise",
+        "word_count",
+        "completed_at",
+        "created_at",
+        "updated_at",
+    )
+    exclude = ("body",)
+    ordering = ("-updated_at",)
+
+    def has_add_permission(self, request):
+        return False
+
 
 admin.site.site_header = "IELTS listening practice"
 admin.site.site_title = "Listening practice admin"
