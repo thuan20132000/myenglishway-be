@@ -346,6 +346,7 @@ ALLOWED_PDF_CONTENT_TYPES = ["application/pdf", "application/x-pdf"]
 # own ceiling. MAX_PDF_FILE_SIZE_MB still governs listening question sheets.
 MAX_WRITING_PDF_FILE_SIZE_MB = env.int("MAX_WRITING_PDF_FILE_SIZE_MB", 60)
 MAX_WRITING_PAGE_LENGTH = env.int("MAX_WRITING_PAGE_LENGTH", 20000)
+MAX_LISTENING_NOTE_LENGTH = env.int("MAX_LISTENING_NOTE_LENGTH", 50000)
 
 SUPPORTED_LANGUAGES = ["en"]
 

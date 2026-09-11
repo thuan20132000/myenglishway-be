@@ -116,6 +116,7 @@ on reload.
 | Browse published collections & exercises | ✅ | ✅ | ✅ | ✅ |
 | Play audio, read segment timings | ✅ | ✅ | ✅ | ✅ |
 | Submit answers / reveal / worksheet key | ❌ | ✅ | ✅ | ✅ |
+| Take notes on an exercise | ❌ | ✅ | ✅ | ✅ |
 | See own attempts / progress / history | ❌ | ✅ | ✅ | ✅ |
 | See the practice leaderboard | ❌ | ✅ | ✅ | ✅ |
 | Create & edit own exercises | ❌ | ❌ | ✅ | ✅ |
@@ -498,10 +499,11 @@ two actions.
 
 ## 7. Learner flow
 
-There are two ways to practise the same exercise. **Worksheet mode** (§7.8) is
+There are three ways to use the same exercise. **Worksheet mode** (§7.8) is
 the paper workflow: question sheet open, audio playing straight through, fill in
 an answer column, then read the key. **Dictation mode** (§7.2–7.6) is the
-segment-by-segment transcription drill with server-side scoring. They share
+segment-by-segment transcription drill with server-side scoring. **Note-taking
+mode** (§7.9) is a private document — no score, no attempt row. They share
 nothing but the exercise.
 
 ### 7.1 Browse
@@ -808,8 +810,8 @@ Column meanings (same definitions as §7.6):
 | `last_practiced_at` | Last practice | ISO-8601 UTC |
 
 Retrying one segment raises `practice_count` by 1 and can only raise
-`average_score`; `attempted_segments` stays the same. Writing notebooks are
-not on this board.
+`average_score`; `attempted_segments` stays the same. Writing notebooks and
+listening notes are not on this board.
 
 Suggested types:
 
@@ -883,6 +885,96 @@ PDF pane on the left, sticky and full height. Answer inputs on the right, in a
 column that scrolls. Keep the player **pinned** — a −10s button that scrolls out
 of reach defeats the whole workflow. Below a tablet width, make the two panes a
 tab toggle rather than a cramped split.
+
+### 7.9 Note-taking mode
+
+A private document per learner per exercise, for jotting while the recording
+plays. Use this when the learner is not answering scored dictation (§7.2) and
+not filling a worksheet (§7.8) — just notes. Saves do **not** create
+`PracticeAttempt` rows and do **not** affect the leaderboard.
+
+Visibility is published-or-owned (admin sees every exercise). Notes do **not**
+require the exercise to be `ready`: the owner can jot against a draft that
+only has audio or a PDF. Someone else's draft is `404`, not `409`.
+
+Every query is scoped to the caller. Opening a notebook as admin creates
+*your* empty note; it never returns another learner's `body`.
+
+#### Open it
+
+`GET /listening/exercises/{id}/notebook/`
+
+**This GET creates the notebook if it doesn't exist.** That is deliberate —
+opening the notes screen is what starting one means, and there is no enrol
+step. Do **not** prefetch this on hover or in a route preloader.
+
+```json
+{ "id": 1, "exercise_id": 125, "title": "Accommodation Practice",
+  "audio_url": "http://localhost:8000/media/audio/3/9f2c.mp3",
+  "pdf_url": "http://localhost:8000/media/pdf/3/4b71.pdf",
+  "body": "Section 1: name is…", "word_count": 4, "completed_at": null,
+  "created_at": "…", "updated_at": "…" }
+```
+
+One request gives you the note plus the playback assets. Hold `body` in local
+state for the textarea; use `audio_url` / `pdf_url` for the player and sheet
+(`null` when that file is missing).
+
+#### Save — the autosave contract
+
+`PUT /listening/exercises/{id}/notebook/`
+
+```json
+{ "body": "Section 1: name is…" }
+```
+
+The contract, and why each part matters:
+
+- **It upserts.** Firing it fifty times leaves one row, not a history.
+- **It is idempotent.** A retry after a network blip is always safe.
+- **An empty `body` is a real save**, not a validation error — it clears the
+  note. Do not skip the request when the textarea empties, or the old text
+  survives on the server.
+- **Max 50 000 characters** (`MAX_LISTENING_NOTE_LENGTH`). Over that is a
+  field error on `body` (`400 VALIDATION_ERROR`). Show a counter as they
+  approach it.
+
+Debounce **500–1000 ms** after the last keystroke. Also flush immediately on
+blur and on `visibilitychange` → `hidden`.
+
+**Guard against out-of-order responses.** Keep a sequence number and ignore
+any response that isn't the newest:
+
+```js
+const seq = useRef(0);
+async function save(body) {
+  const mine = ++seq.current;
+  const res = await api.put(`/listening/exercises/${id}/notebook/`, { body });
+  if (mine === seq.current) setSavedAt(res.updated_at);
+}
+```
+
+Never write the response's `body` back into the textarea. The learner may have
+typed more since the request left; echoing the server's copy makes characters
+disappear. Take only `updated_at` and `word_count` from the response.
+
+**Status indicator.** Three states, driven locally: `dirty` → "Unsaved",
+request in flight → "Saving…", newest response landed → "Saved" (render
+`updated_at` relatively). On failure show "Not saved — retrying" and keep the
+text; the next debounce will carry it.
+
+#### Mark done
+
+`POST /listening/exercises/{id}/notebook/complete/` stamps `completed_at`.
+`DELETE` on the same path clears it. Both are idempotent; re-completing keeps
+the original timestamp. Completion is the learner's own claim — nothing infers
+it from the text.
+
+#### Continue notes
+
+`GET /listening/notebooks/` — paginated, the caller's notebooks only, newest
+`updated_at` first. Rows carry `id`, `exercise_id`, `title`, `word_count`,
+`completed_at`, `updated_at`. **No `body`.** Open the notebook to read it.
 
 ## 8. Errors
 

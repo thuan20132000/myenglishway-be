@@ -20,6 +20,7 @@ from .models import (
     ExerciseAnswer,
     ExerciseCollection,
     ListeningExercise,
+    ListeningNotebook,
     TranscriptSegment,
 )
 from .validators import validate_audio_file, validate_pdf_file
@@ -641,3 +642,67 @@ class CollectionMembersSerializer(serializers.Serializer):
         if len(set(value)) != len(value):
             raise serializers.ValidationError("Each exercise may appear only once.")
         return value
+
+
+class ListeningNotebookWriteSerializer(serializers.Serializer):
+    """The autosave body. Blank is a real value — the learner cleared the note."""
+
+    body = serializers.CharField(allow_blank=True, trim_whitespace=False)
+
+    def validate_body(self, value: str) -> str:
+        limit = settings.MAX_LISTENING_NOTE_LENGTH
+        if len(value) > limit:
+            raise serializers.ValidationError(
+                f"A note holds at most {limit} characters."
+            )
+        return value
+
+
+class ListeningNotebookSerializer(serializers.ModelSerializer):
+    """The caller's note plus the exercise assets the notes screen needs."""
+
+    exercise_id = serializers.IntegerField(source="exercise.id", read_only=True)
+    title = serializers.CharField(source="exercise.title", read_only=True)
+    audio_url = serializers.SerializerMethodField()
+    pdf_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ListeningNotebook
+        fields = [
+            "id",
+            "exercise_id",
+            "title",
+            "audio_url",
+            "pdf_url",
+            "body",
+            "word_count",
+            "completed_at",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+    def get_audio_url(self, obj) -> str | None:
+        return absolute_media_url(obj.exercise.audio_file, self.context.get("request"))
+
+    def get_pdf_url(self, obj) -> str | None:
+        return absolute_media_url(obj.exercise.pdf_file, self.context.get("request"))
+
+
+class ListeningNotebookListSerializer(serializers.ModelSerializer):
+    """Continue-notes rows. The body is omitted; open a notebook to read it."""
+
+    exercise_id = serializers.IntegerField(source="exercise.id", read_only=True)
+    title = serializers.CharField(source="exercise.title", read_only=True)
+
+    class Meta:
+        model = ListeningNotebook
+        fields = [
+            "id",
+            "exercise_id",
+            "title",
+            "word_count",
+            "completed_at",
+            "updated_at",
+        ]
+        read_only_fields = fields

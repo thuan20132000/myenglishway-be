@@ -1094,6 +1094,180 @@ paths:
               example:
                 code: AUTHENTICATION_FAILED
                 detail: Authentication credentials were not provided.
+  /api/v1/listening/exercises/{exercise_id}/notebook/:
+    get:
+      operationId: listening_exercises_notebook_retrieve
+      description: |-
+        Get-or-create: the first call starts the notebook. Returns the note plus `audio_url` and `pdf_url` so the notes screen is one request.
+
+        Do not prefetch this on hover — opening is what starts the notebook.
+      summary: Open the caller's notebook for an exercise
+      parameters:
+      - in: path
+        name: exercise_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - listening
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListeningNotebook'
+              examples:
+                EmptyNotebook:
+                  value:
+                    id: 1
+                    exercise_id: 125
+                    title: Accommodation Practice
+                    audio_url: http://localhost:8000/media/audio/3/9f2c.mp3
+                    pdf_url: http://localhost:8000/media/pdf/3/4b71.pdf
+                    body: ''
+                    word_count: 0
+                    completed_at: null
+                    created_at: '2026-09-11T10:00:00Z'
+                    updated_at: '2026-09-11T10:00:00Z'
+                  summary: Empty notebook
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+    put:
+      operationId: listening_exercises_notebook_update
+      description: Autosave. Overwrites the single `body`, so a client debouncing
+        every ~500ms produces one row, not a history. An empty `body` clears the note
+        — that is a legitimate save, not a validation error.
+      summary: Save the caller's notes
+      parameters:
+      - in: path
+        name: exercise_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - listening
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ListeningNotebookWriteRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ListeningNotebookWriteRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ListeningNotebookWriteRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListeningNotebook'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+  /api/v1/listening/exercises/{exercise_id}/notebook/complete/:
+    post:
+      operationId: listening_exercises_notebook_complete_create
+      description: |-
+        `POST` stamps `completed_at`, `DELETE` clears it. Both are idempotent, and re-completing keeps the original timestamp.
+
+        Completion is the learner's own claim: nothing infers it from the text, because a notebook is not scored.
+      summary: Mark the notes finished, or un-finish them
+      parameters:
+      - in: path
+        name: exercise_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - listening
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListeningNotebook'
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+    delete:
+      operationId: listening_exercises_notebook_complete_destroy
+      description: 'Idempotent: already-unfinished notes stay unfinished.'
+      summary: Clear the finished mark on the notes
+      parameters:
+      - in: path
+        name: exercise_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - listening
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListeningNotebook'
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
   /api/v1/listening/exercises/{exercise_id}/segments/:
     get:
       operationId: listening_exercises_segments_list
@@ -1707,6 +1881,54 @@ paths:
               example:
                 code: AUTHENTICATION_FAILED
                 detail: Authentication credentials were not provided.
+  /api/v1/listening/notebooks/:
+    get:
+      operationId: listening_notebooks_list
+      description: The "continue notes" list, most recently touched first. Bodies
+        are omitted; open a notebook to read them.
+      summary: List the caller's listening notebooks
+      parameters:
+      - name: ordering
+        required: false
+        in: query
+        description: Which field to use when ordering the results.
+        schema:
+          type: string
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: page_size
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: search
+        required: false
+        in: query
+        description: A search term.
+        schema:
+          type: string
+      tags:
+      - listening
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedListeningNotebookListList'
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
   /api/v1/listening/public/collections/:
     get:
       operationId: listening_public_collections_list
@@ -4596,6 +4818,101 @@ components:
       - segment_count
       - status
       - title
+    ListeningNotebook:
+      type: object
+      description: The caller's note plus the exercise assets the notes screen needs.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        exercise_id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+        audio_url:
+          type: string
+          nullable: true
+          readOnly: true
+        pdf_url:
+          type: string
+          nullable: true
+          readOnly: true
+        body:
+          type: string
+          readOnly: true
+        word_count:
+          type: integer
+          readOnly: true
+        completed_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+          description: Set when the learner marks the notes done. Never inferred.
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - audio_url
+      - body
+      - completed_at
+      - created_at
+      - exercise_id
+      - id
+      - pdf_url
+      - title
+      - updated_at
+      - word_count
+    ListeningNotebookList:
+      type: object
+      description: Continue-notes rows. The body is omitted; open a notebook to read
+        it.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        exercise_id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+        word_count:
+          type: integer
+          readOnly: true
+        completed_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+          description: Set when the learner marks the notes done. Never inferred.
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - completed_at
+      - exercise_id
+      - id
+      - title
+      - updated_at
+      - word_count
+    ListeningNotebookWriteRequest:
+      type: object
+      description: The autosave body. Blank is a real value — the learner cleared
+        the note.
+      properties:
+        body:
+          type: string
+      required:
+      - body
     LoginRequest:
       type: object
       description: |-
@@ -4698,6 +5015,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ListeningExerciseList'
+    PaginatedListeningNotebookListList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/ListeningNotebookList'
     PaginatedPracticeAttemptList:
       type: object
       required:
