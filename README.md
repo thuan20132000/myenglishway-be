@@ -1,13 +1,14 @@
 # English Practice API
 
-Django REST API for English practice. Two domains:
+Django REST API for English practice. Three domains:
 
 - **Listening** (`/api/v1/listening/`, `/api/v1/practice/`) — creators upload audio (and an optional PDF handout); Whisper transcribes it into timestamped segments. Learners play one segment at a time, type what they heard, and get a score.
 - **Writing** (`/api/v1/writing/`) — anyone uploads a workbook PDF and keeps a private, page-by-page notebook against it. Nothing is graded; saving a page is an upsert, not a submission.
+- **Reading** (`/api/v1/reading/`) — anyone pastes a passage (optional follow-up audio) and runs paced-reading sessions. The client owns the WPM animation; the API stores target WPM, reading time and actual WPM.
 
 **Base URL:** `/api/v1/` · **Swagger:** `/api/docs/` · **OpenAPI:** `/api/schema/`
 
-Client contracts: [docs/frontend-implementation.md](docs/frontend-implementation.md) (listening) · [docs/writing-frontend.md](docs/writing-frontend.md) (writing).
+Client contracts: [docs/frontend-implementation.md](docs/frontend-implementation.md) (listening) · [docs/writing-frontend.md](docs/writing-frontend.md) (writing) · [docs/reading-frontend.md](docs/reading-frontend.md) (reading).
 
 ## Requirements
 
@@ -91,7 +92,7 @@ aws s3 sync media/ s3://your-bucket/
 
 Database rows already store paths like `audio/1/<uuid>.mp3`; they do not need rewriting.
 
-Uploads are namespaced by kind so storage rules can target them separately: `audio/`, `pdf/` (listening handouts) and `writing-pdf/` (writing workbooks). Size limits are independent — `MAX_PDF_FILE_SIZE_MB` (default 20) caps a handout, `MAX_WRITING_PDF_FILE_SIZE_MB` (default 60) caps a workbook. A workbook's page count is read with `pypdf` on upload and never taken from the request.
+Uploads are namespaced by kind so storage rules can target them separately: `audio/`, `pdf/` (listening handouts), `writing-pdf/` (writing workbooks) and `reading-audio/` (optional reading clips). Size limits are independent — `MAX_PDF_FILE_SIZE_MB` (default 20) caps a handout, `MAX_WRITING_PDF_FILE_SIZE_MB` (default 60) caps a workbook. A workbook's page count is read with `pypdf` on upload and never taken from the request.
 
 Transcription needs `OPENAI_API_KEY` and `TRANSCRIPTION_PROVIDER=openai`. Use `stub` to develop without calling OpenAI. Whisper rejects files over 25 MB (`TRANSCRIPTION_MAX_FILE_SIZE_MB`); that cap is independent of `MAX_AUDIO_FILE_SIZE_MB`.
 
@@ -131,6 +132,7 @@ Read-only `public/` routes need no token: published collections, exercises, and 
 | `listening/` | Exercises, collections, transcripts, transcription |
 | `practice/` | Dictation scoring, progress, worksheets |
 | `writing/` | PDF workbooks and private per-page notebooks |
+| `reading/` | Passages, optional audio, paced-reading sessions |
 | `common/` | Shared errors, validators, text helpers, media serving |
 | `config/` | Settings, URLs, Celery |
 | `docs/` | Frontend implementation guides |

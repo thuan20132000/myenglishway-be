@@ -69,6 +69,7 @@ LOCAL_APPS = [
     "listening",
     "practice",
     "writing",
+    "reading",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -185,7 +186,8 @@ SPECTACULAR_SETTINGS = {
     "TITLE": "IELTS Listening Practice API",
     "DESCRIPTION": """
 Backend API for uploading listening audio, managing timestamped transcript
-segments, and running dictation practice.
+segments, running dictation practice, keeping writing notebooks, and storing
+paced-reading passages and sessions.
 
 ## Authentication
 
@@ -209,6 +211,8 @@ read-only `public` endpoints, which any visitor may call without a token:
 | `GET /api/v1/practice/public/exercises/{id}/segments/` | Segment playback windows, transcript excluded |
 | `GET /api/v1/writing/public/exercises/` | Published writing workbooks |
 | `GET /api/v1/writing/public/exercises/{id}/` | One published workbook with its PDF URL |
+| `GET /api/v1/reading/public/exercises/` | Published reading passages |
+| `GET /api/v1/reading/public/exercises/{id}/` | One published passage with its body |
 
 They show published rows only, and anything unpublished returns 404. Scoring
 an answer, revealing a transcript and recording progress still need an account.
@@ -217,7 +221,7 @@ an answer, revealing a transcript and recording progress still need an account.
 
 | Role | Can do |
 |---|---|
-| `student` | Practise, submit answers, keep writing notebooks, upload own workbooks |
+| `student` | Practise, notebooks, own workbooks and reading passages |
 | `creator` | Everything a student can, plus author, edit and publish their own exercises |
 | `admin` | Full access to every exercise |
 
@@ -270,6 +274,7 @@ Everything else returns a stable machine-readable code:
 | `UNREADABLE_PDF_FILE` | 400 | The PDF is corrupt or encrypted; pages uncountable |
 | `PAGE_OUT_OF_RANGE` | 400 | The page number is outside the workbook |
 | `WRITING_EXERCISE_HAS_NOTEBOOKS` | 409 | Learners have started; the PDF is frozen |
+| `SESSION_ALREADY_FINISHED` | 409 | Finish called on a finished reading session |
 
 Requesting a resource the caller may not see returns **404, not 403** - a 403
 would confirm that it exists.
@@ -306,12 +311,21 @@ would confirm that it exists.
                 "them. Nothing is scored: a page is saved, not submitted."
             ),
         },
+        {
+            "name": "reading",
+            "description": (
+                "Paced-reading passages and append-only sessions. The client "
+                "owns the WPM animation; the API stores the body, optional "
+                "audio, target WPM and actual WPM."
+            ),
+        },
     ],
     "ENUM_NAME_OVERRIDES": {
         "ExerciseStatusEnum": "listening.models.ExerciseStatus.choices",
         "RoleEnum": "accounts.models.Role.choices",
         # The narrower set accepted as input wherever a user picks their own role.
         "SelfAssignableRoleEnum": "accounts.models.SELF_ASSIGNABLE_ROLE_CHOICES",
+        "ReadingModeEnum": "reading.models.ReadingMode.choices",
     },
     "SWAGGER_UI_SETTINGS": {
         "deepLinking": True,
@@ -347,6 +361,9 @@ ALLOWED_PDF_CONTENT_TYPES = ["application/pdf", "application/x-pdf"]
 MAX_WRITING_PDF_FILE_SIZE_MB = env.int("MAX_WRITING_PDF_FILE_SIZE_MB", 60)
 MAX_WRITING_PAGE_LENGTH = env.int("MAX_WRITING_PAGE_LENGTH", 20000)
 MAX_LISTENING_NOTE_LENGTH = env.int("MAX_LISTENING_NOTE_LENGTH", 50000)
+MAX_READING_BODY_LENGTH = env.int("MAX_READING_BODY_LENGTH", 80000)
+MIN_READING_WPM = 100
+MAX_READING_WPM = 500
 
 SUPPORTED_LANGUAGES = ["en"]
 
