@@ -5,7 +5,8 @@ info:
   description: |2
 
     Backend API for uploading listening audio, managing timestamped transcript
-    segments, and running dictation practice.
+    segments, running dictation practice, keeping writing notebooks, and storing
+    paced-reading passages and sessions.
 
     ## Authentication
 
@@ -29,6 +30,8 @@ info:
     | `GET /api/v1/practice/public/exercises/{id}/segments/` | Segment playback windows, transcript excluded |
     | `GET /api/v1/writing/public/exercises/` | Published writing workbooks |
     | `GET /api/v1/writing/public/exercises/{id}/` | One published workbook with its PDF URL |
+    | `GET /api/v1/reading/public/exercises/` | Published reading passages |
+    | `GET /api/v1/reading/public/exercises/{id}/` | One published passage with its body |
 
     They show published rows only, and anything unpublished returns 404. Scoring
     an answer, revealing a transcript and recording progress still need an account.
@@ -37,7 +40,7 @@ info:
 
     | Role | Can do |
     |---|---|
-    | `student` | Practise, submit answers, keep writing notebooks, upload own workbooks |
+    | `student` | Practise, notebooks, own workbooks and reading passages |
     | `creator` | Everything a student can, plus author, edit and publish their own exercises |
     | `admin` | Full access to every exercise |
 
@@ -90,6 +93,7 @@ info:
     | `UNREADABLE_PDF_FILE` | 400 | The PDF is corrupt or encrypted; pages uncountable |
     | `PAGE_OUT_OF_RANGE` | 400 | The page number is outside the workbook |
     | `WRITING_EXERCISE_HAS_NOTEBOOKS` | 409 | Learners have started; the PDF is frozen |
+    | `SESSION_ALREADY_FINISHED` | 409 | Finish called on a finished reading session |
 
     Requesting a resource the caller may not see returns **404, not 403** - a 403
     would confirm that it exists.
@@ -3311,6 +3315,693 @@ paths:
               example:
                 code: AUTHENTICATION_FAILED
                 detail: Authentication credentials were not provided.
+  /api/v1/reading/exercises/:
+    get:
+      operationId: reading_exercises_list
+      description: Anyone sees published passages plus their own, in any state. Admins
+        see everything. Rows carry the caller's own progress (`session_count`, `last_actual_wpm`,
+        `last_target_wpm`) and never a `body` or `audio_url` - those are on the detail
+        view.
+      summary: List passages visible to the caller
+      parameters:
+      - in: query
+        name: is_published
+        schema:
+          type: boolean
+      - in: query
+        name: language
+        schema:
+          type: string
+      - in: query
+        name: mine
+        schema:
+          type: boolean
+        description: Restrict to the caller's own uploads.
+      - in: query
+        name: ordering
+        schema:
+          type: string
+        description: One of created_at, -created_at, title, -title, word_count.
+      - in: query
+        name: owner
+        schema:
+          type: number
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: page_size
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - in: query
+        name: search
+        schema:
+          type: string
+        description: Matches title, description and source.
+      tags:
+      - reading
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedReadingExerciseListList'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+    post:
+      operationId: reading_exercises_create
+      description: Any authenticated user, not just creators - pasting your own Section
+        4 transcript to work through is the point of this domain. The passage starts
+        private. `word_count` is derived from the body and ignored if sent.
+      summary: Create a passage
+      tags:
+      - reading
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReadingExerciseCreateRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ReadingExerciseCreateRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ReadingExerciseCreateRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadingExerciseDetail'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/reading/exercises/{exercise_id}/sessions/:
+    get:
+      operationId: reading_exercises_sessions_list
+      description: Newest first. Never includes another learner's runs.
+      summary: List the caller's sessions for a passage
+      parameters:
+      - in: path
+        name: exercise_id
+        schema:
+          type: integer
+        required: true
+      - name: ordering
+        required: false
+        in: query
+        description: Which field to use when ordering the results.
+        schema:
+          type: string
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: page_size
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: search
+        required: false
+        in: query
+        description: A search term.
+        schema:
+          type: string
+      tags:
+      - reading
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedReadingSessionList'
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+    post:
+      operationId: reading_exercises_sessions_create
+      description: Creates an in-progress run. The server sets `started_at` and snapshots
+        `word_count` from the passage. Finish it with `PATCH /reading/sessions/{id}/`.
+      summary: Start a reading session
+      parameters:
+      - in: path
+        name: exercise_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - reading
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReadingSessionStartRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ReadingSessionStartRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ReadingSessionStartRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadingSession'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+  /api/v1/reading/exercises/{id}/:
+    get:
+      operationId: reading_exercises_retrieve
+      description: 'Includes `body` and `audio_url`. `audio_url` is a plain media
+        URL: fetch it *without* an `Authorization` header.'
+      summary: Retrieve one passage
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this reading exercise.
+        required: true
+      tags:
+      - reading
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadingExerciseDetail'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+    patch:
+      operationId: reading_exercises_partial_update
+      description: Owner or admin only. Replacing `audio_file` deletes the old file.
+        Editing `body` recomputes `word_count`; existing sessions keep the snapshot
+        they took at start.
+      summary: Update passage metadata, body, or audio
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this reading exercise.
+        required: true
+      tags:
+      - reading
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedReadingExerciseUpdateRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedReadingExerciseUpdateRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedReadingExerciseUpdateRequest'
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadingExerciseDetail'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+    delete:
+      operationId: reading_exercises_destroy
+      description: Owner or admin only. Cascades to each learner's sessions. Prefer
+        unpublishing to withdraw a passage.
+      summary: Delete a passage and every session against it
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this reading exercise.
+        required: true
+      tags:
+      - reading
+      security:
+      - jwtAuth: []
+      responses:
+        '204':
+          description: No response body
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/reading/exercises/{id}/audio/:
+    delete:
+      operationId: reading_exercises_audio_destroy
+      description: 'Owner or admin only. Idempotent: deleting when there is no file
+        is 204.'
+      summary: Remove the optional audio from a passage
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this reading exercise.
+        required: true
+      tags:
+      - reading
+      security:
+      - jwtAuth: []
+      responses:
+        '204':
+          description: No response body
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/reading/exercises/{id}/publish/:
+    post:
+      operationId: reading_exercises_publish_create
+      description: 'Owner **and** creator role. Makes the passage readable by anyone,
+        including anonymous visitors. Sessions stay private regardless: publishing
+        shares the body, never anyone''s WPM history.'
+      summary: Publish a passage to the catalogue
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this reading exercise.
+        required: true
+      tags:
+      - reading
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadingExercisePublication'
+              examples:
+                Published:
+                  value:
+                    id: 7
+                    is_published: true
+                    published_at: '2026-08-26T10:00:00Z'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/reading/exercises/{id}/unpublish/:
+    post:
+      operationId: reading_exercises_unpublish_create
+      description: Owner **and** creator role. Idempotent. Sessions learners have
+        already started are retained and stay readable by their owners.
+      summary: Withdraw a passage from the catalogue
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this reading exercise.
+        required: true
+      tags:
+      - reading
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadingExercisePublication'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/reading/public/exercises/:
+    get:
+      operationId: reading_public_exercises_list
+      summary: List published passages (no authentication)
+      parameters:
+      - in: query
+        name: is_published
+        schema:
+          type: boolean
+      - in: query
+        name: language
+        schema:
+          type: string
+      - in: query
+        name: mine
+        schema:
+          type: boolean
+      - name: ordering
+        required: false
+        in: query
+        description: Which field to use when ordering the results.
+        schema:
+          type: string
+      - in: query
+        name: owner
+        schema:
+          type: number
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: page_size
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: search
+        required: false
+        in: query
+        description: A search term.
+        schema:
+          type: string
+      tags:
+      - public
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedReadingExerciseListList'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/reading/public/exercises/{id}/:
+    get:
+      operationId: reading_public_exercises_retrieve
+      description: An unpublished passage returns 404. Includes `body`.
+      summary: Retrieve one published passage
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this reading exercise.
+        required: true
+      tags:
+      - public
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadingExerciseDetail'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          description: Authentication credentials were not provided or are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: AUTHENTICATION_FAILED
+                detail: Authentication credentials were not provided.
+  /api/v1/reading/sessions/{id}/:
+    patch:
+      operationId: reading_sessions_partial_update
+      description: Writes `finished_at` and a server-computed `actual_wpm` from the
+        snapshotted `word_count` and `reading_ms`. `reading_ms` must be at least 1.
+        409 if the session is already finished.
+      summary: Finish a reading session
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - reading
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedReadingSessionFinishRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedReadingSessionFinishRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedReadingSessionFinishRequest'
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadingSession'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: ''
   /api/v1/writing/exercises/:
     get:
       operationId: writing_exercises_list
@@ -5061,6 +5752,52 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/PracticeAttempt'
+    PaginatedReadingExerciseListList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReadingExerciseList'
+    PaginatedReadingSessionList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReadingSession'
     PaginatedWritingExerciseListList:
       type: object
       required:
@@ -5168,6 +5905,50 @@ components:
           description: Audio length in seconds. Creator-supplied for now; the future
             transcription pipeline will set it automatically. Required before an exercise
             can be published.
+    PatchedReadingExerciseUpdateRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+        source:
+          type: string
+          description: Where the passage came from - book title, publisher, unit.
+          maxLength: 255
+        language:
+          type: string
+          minLength: 1
+          maxLength: 10
+        body:
+          type: string
+          minLength: 1
+          description: The passage itself. Plain text; paragraphs preserved.
+        suggested_wpm:
+          type: integer
+          maximum: 500
+          minimum: 100
+        audio_file:
+          type: string
+          format: binary
+          description: 'Optional follow-up audio, not synced to paced reading. Allowed:
+            .mp3, .m4a, .wav, .ogg.'
+    PatchedReadingSessionFinishRequest:
+      type: object
+      properties:
+        reading_ms:
+          type: integer
+          minimum: 1
+        paused_ms:
+          type: integer
+          minimum: 0
+          default: 0
+        progress:
+          type: integer
+          maximum: 100
+          minimum: 0
     PatchedTranscriptSegmentCreatorRequest:
       type: object
       description: |-
@@ -5511,6 +6292,308 @@ components:
       - progress_percentage
       - revealed_segments
       - total_segments
+    ReadingExerciseCreateRequest:
+      type: object
+      description: Any authenticated user may paste a passage; it starts private.
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+        source:
+          type: string
+          description: Where the passage came from - book title, publisher, unit.
+          maxLength: 255
+        language:
+          type: string
+          minLength: 1
+          maxLength: 10
+        body:
+          type: string
+          minLength: 1
+          description: The passage itself. Plain text; paragraphs preserved.
+        suggested_wpm:
+          type: integer
+          maximum: 500
+          minimum: 100
+      required:
+      - body
+      - title
+    ReadingExerciseDetail:
+      type: object
+      description: |-
+        The passage's optional audio URL - a plain media URL, no authorisation.
+
+        The client must fetch it *without* an ``Authorization`` header, exactly
+        like listening's audio and writing's PDF.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+        description:
+          type: string
+          readOnly: true
+        source:
+          type: string
+          readOnly: true
+          description: Where the passage came from - book title, publisher, unit.
+        owner:
+          allOf:
+          - $ref: '#/components/schemas/OwnerRef'
+          readOnly: true
+        body:
+          type: string
+          readOnly: true
+          description: The passage itself. Plain text; paragraphs preserved.
+        word_count:
+          type: integer
+          readOnly: true
+          description: Derived from the body via tokenize(). Never supplied by the
+            client.
+        suggested_wpm:
+          type: integer
+          readOnly: true
+        audio_url:
+          type: string
+          nullable: true
+          readOnly: true
+        language:
+          type: string
+          readOnly: true
+        is_published:
+          type: boolean
+          readOnly: true
+        published_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        has_audio:
+          type: boolean
+          readOnly: true
+        session_count:
+          type: integer
+          readOnly: true
+        last_actual_wpm:
+          type: number
+          format: double
+          nullable: true
+          readOnly: true
+        last_target_wpm:
+          type: integer
+          nullable: true
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - audio_url
+      - body
+      - created_at
+      - description
+      - has_audio
+      - id
+      - is_published
+      - language
+      - last_actual_wpm
+      - last_target_wpm
+      - owner
+      - published_at
+      - session_count
+      - source
+      - suggested_wpm
+      - title
+      - updated_at
+      - word_count
+    ReadingExerciseList:
+      type: object
+      description: 'List rows. No ``body`` or ``audio_url``: those live on the detail
+        view.'
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+        source:
+          type: string
+          readOnly: true
+          description: Where the passage came from - book title, publisher, unit.
+        owner:
+          allOf:
+          - $ref: '#/components/schemas/OwnerRef'
+          readOnly: true
+        word_count:
+          type: integer
+          readOnly: true
+          description: Derived from the body via tokenize(). Never supplied by the
+            client.
+        suggested_wpm:
+          type: integer
+          readOnly: true
+        language:
+          type: string
+          readOnly: true
+        is_published:
+          type: boolean
+          readOnly: true
+        has_audio:
+          type: boolean
+          readOnly: true
+        session_count:
+          type: integer
+          readOnly: true
+        last_actual_wpm:
+          type: number
+          format: double
+          nullable: true
+          readOnly: true
+        last_target_wpm:
+          type: integer
+          nullable: true
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - has_audio
+      - id
+      - is_published
+      - language
+      - last_actual_wpm
+      - last_target_wpm
+      - owner
+      - session_count
+      - source
+      - suggested_wpm
+      - title
+      - word_count
+    ReadingExercisePublication:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        is_published:
+          type: boolean
+          readOnly: true
+        published_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+      required:
+      - id
+      - is_published
+      - published_at
+    ReadingModeEnum:
+      enum:
+      - paced
+      - highlight
+      - normal
+      type: string
+      description: |-
+        * `paced` - Paced
+        * `highlight` - Highlight
+        * `normal` - Normal
+    ReadingSession:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        exercise_id:
+          type: integer
+          readOnly: true
+        mode:
+          allOf:
+          - $ref: '#/components/schemas/ReadingModeEnum'
+          readOnly: true
+        target_wpm:
+          type: integer
+          readOnly: true
+        strict_mode:
+          type: boolean
+          readOnly: true
+        word_count:
+          type: integer
+          readOnly: true
+          description: Snapshot of passage length at start. Survives later body edits.
+        started_at:
+          type: string
+          format: date-time
+          readOnly: true
+        finished_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        paused_ms:
+          type: integer
+          readOnly: true
+        reading_ms:
+          type: integer
+          readOnly: true
+        progress:
+          type: integer
+          readOnly: true
+        actual_wpm:
+          type: number
+          format: double
+          readOnly: true
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - actual_wpm
+      - created_at
+      - exercise_id
+      - finished_at
+      - id
+      - mode
+      - paused_ms
+      - progress
+      - reading_ms
+      - started_at
+      - strict_mode
+      - target_wpm
+      - updated_at
+      - word_count
+    ReadingSessionStartRequest:
+      type: object
+      properties:
+        mode:
+          allOf:
+          - $ref: '#/components/schemas/ReadingModeEnum'
+          default: paced
+        target_wpm:
+          type: integer
+          maximum: 500
+          minimum: 100
+        strict_mode:
+          type: boolean
+          default: false
+      required:
+      - target_wpm
     RegisterRequest:
       type: object
       properties:
@@ -6124,3 +7207,7 @@ tags:
 - name: writing
   description: 'PDF workbooks and the private notebooks learners keep against them.
     Nothing is scored: a page is saved, not submitted.'
+- name: reading
+  description: Paced-reading passages and append-only sessions. The client owns the
+    WPM animation; the API stores the body, optional audio, target WPM and actual
+    WPM.

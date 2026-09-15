@@ -15,4 +15,5 @@ urlpatterns = [
     path("listening/", include("listening.urls")),
     path("practice/", include("practice.urls")),
     path("writing/", include("writing.urls")),
+    path("reading/", include("reading.urls")),
 ]

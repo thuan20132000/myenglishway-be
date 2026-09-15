@@ -12,6 +12,7 @@ from listening.models import (
     TranscriptSegment,
 )
 from practice.models import AttemptKind, PracticeAttempt
+from reading.models import ReadingExercise, ReadingMode, ReadingSession
 from writing.models import WritingExercise, WritingNotebook, WritingPage
 
 User = get_user_model()
@@ -191,3 +192,55 @@ class WritingPageFactory(factory.django.DjangoModelFactory):
     notebook = factory.SubFactory(WritingNotebookFactory)
     page_number = factory.Sequence(lambda n: n + 1)
     body = "However, the results were inconclusive."
+
+
+class ReadingExerciseFactory(factory.django.DjangoModelFactory):
+    """A passage built straight through the ORM.
+
+    ``word_count`` is derived in ``ReadingExercise.save()`` from ``body``, so
+    tests that care about a specific count set the body accordingly.
+    """
+
+    class Meta:
+        model = ReadingExercise
+
+    owner = factory.SubFactory(UserFactory)
+    title = factory.Sequence(lambda n: f"Passage {n}")
+    description = "Academic lecture transcript"
+    source = "Cambridge IELTS 18 Test 1 Section 4"
+    body = (
+        "The development of artificial intelligence has changed many aspects "
+        "of modern life."
+    )
+    language = "en"
+    suggested_wpm = 250
+
+    class Params:
+        published = factory.Trait(
+            is_published=True,
+            published_at=factory.LazyFunction(timezone.now),
+        )
+        with_audio = factory.Trait(
+            audio_file=factory.django.FileField(filename="lecture.mp3", data=b"fake-audio"),
+        )
+
+
+class ReadingSessionFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = ReadingSession
+
+    user = factory.SubFactory(UserFactory)
+    exercise = factory.SubFactory(ReadingExerciseFactory)
+    mode = ReadingMode.PACED
+    target_wpm = 250
+    word_count = factory.LazyAttribute(lambda o: o.exercise.word_count)
+    started_at = factory.LazyFunction(timezone.now)
+
+    class Params:
+        finished = factory.Trait(
+            finished_at=factory.LazyFunction(timezone.now),
+            reading_ms=180_000,
+            paused_ms=0,
+            progress=100,
+            actual_wpm=factory.LazyAttribute(lambda o: o.word_count * 60_000 / o.reading_ms),
+        )
