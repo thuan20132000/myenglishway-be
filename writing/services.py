@@ -78,8 +78,8 @@ def _discard_file(file_field) -> None:
 # --------------------------------------------------------------------------
 
 
-def create_exercise(*, owner, pdf_file, **fields) -> WritingExercise:
-    page_count = count_pdf_pages(pdf_file)
+def create_exercise(*, owner, pdf_file=None, **fields) -> WritingExercise:
+    page_count = count_pdf_pages(pdf_file) if pdf_file else 1
     return WritingExercise.objects.create(
         owner=owner, pdf_file=pdf_file, page_count=page_count, **fields
     )
@@ -92,7 +92,12 @@ def assert_pdf_replaceable(exercise: WritingExercise) -> None:
     or re-paginated replacement silently misfiles every page a learner wrote.
     Rejecting is the honest answer; the owner can delete the workbook or upload
     a new one.
+
+    Attaching the *first* PDF is not a replacement: a prompt-only task has one
+    writing page, and adding a sheet only expands the range.
     """
+    if not exercise.pdf_file:
+        return
     if exercise.is_published:
         raise WorkbookInUse(
             "Unpublish the workbook before replacing its PDF.",
@@ -139,14 +144,11 @@ def update_exercise(exercise: WritingExercise, **fields) -> WritingExercise:
 def check_publish_preconditions(exercise: WritingExercise) -> list[str]:
     """Reasons the workbook cannot be published, empty when it can.
 
-    Nothing fails today - a workbook always has its PDF - but the shape matches
-    ``listening.services.check_publish_preconditions`` so a future rule (a
-    minimum page count, a required answer key) drops straight in.
+    A prompt-only task (no PDF) is publishable: publishing shares the title and
+    description, the same way reading publishes a body. A missing PDF is not a
+    blocker.
     """
-    reasons = []
-    if not exercise.pdf_file:
-        reasons.append("missing_pdf")
-    return reasons
+    return []
 
 
 def publish_exercise(exercise: WritingExercise) -> WritingExercise:

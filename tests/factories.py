@@ -175,6 +175,7 @@ class WritingExerciseFactory(factory.django.DjangoModelFactory):
             is_published=True,
             published_at=factory.LazyFunction(timezone.now),
         )
+        without_pdf = factory.Trait(pdf_file=None, page_count=1)
 
 
 class WritingNotebookFactory(factory.django.DjangoModelFactory):

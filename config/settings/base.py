@@ -210,7 +210,7 @@ read-only `public` endpoints, which any visitor may call without a token:
 | `GET /api/v1/listening/public/exercises/{id}/` | One published exercise, transcript excluded |
 | `GET /api/v1/practice/public/exercises/{id}/segments/` | Segment playback windows, transcript excluded |
 | `GET /api/v1/writing/public/exercises/` | Published writing workbooks |
-| `GET /api/v1/writing/public/exercises/{id}/` | One published workbook with its PDF URL |
+| `GET /api/v1/writing/public/exercises/{id}/` | One published writing task (PDF URL may be null) |
 | `GET /api/v1/reading/public/exercises/` | Published reading passages |
 | `GET /api/v1/reading/public/exercises/{id}/` | One published passage with its body |
 
@@ -307,8 +307,8 @@ would confirm that it exists.
         {
             "name": "writing",
             "description": (
-                "PDF workbooks and the private notebooks learners keep against "
-                "them. Nothing is scored: a page is saved, not submitted."
+                "Writing tasks (optional PDF) and the private notebooks learners "
+                "keep against them. Nothing is scored: a page is saved, not submitted."
             ),
         },
         {

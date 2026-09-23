@@ -3,7 +3,7 @@
 Django REST API for English practice. Three domains:
 
 - **Listening** (`/api/v1/listening/`, `/api/v1/practice/`) — creators upload audio (and an optional PDF handout); Whisper transcribes it into timestamped segments. Learners play one segment at a time, type what they heard, and get a score.
-- **Writing** (`/api/v1/writing/`) — anyone uploads a workbook PDF and keeps a private, page-by-page notebook against it. Nothing is graded; saving a page is an upsert, not a submission.
+- **Writing** (`/api/v1/writing/`) — anyone creates a writing task (optional workbook PDF) and keeps a private, page-by-page notebook against it. Nothing is graded; saving a page is an upsert, not a submission.
 - **Reading** (`/api/v1/reading/`) — anyone pastes a passage (optional follow-up audio) and runs paced-reading sessions. The client owns the WPM animation; the API stores target WPM, reading time and actual WPM.
 
 **Base URL:** `/api/v1/` · **Swagger:** `/api/docs/` · **OpenAPI:** `/api/schema/`

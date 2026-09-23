@@ -5,8 +5,8 @@ authenticated viewset widens what it shows by reading ``user.is_admin``, which
 ``AnonymousUser`` does not have. One fixed rule here instead - published rows
 only, reads only.
 
-There is deliberately **no** public notebook route. The PDF is what publishing
-shares; writing something down requires an account.
+There is deliberately **no** public notebook route. The prompt (and PDF, if
+any) is what publishing shares; writing something down requires an account.
 """
 
 from drf_spectacular.utils import extend_schema, extend_schema_view

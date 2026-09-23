@@ -42,6 +42,28 @@ def test_opening_a_workbook_creates_the_notebook(auth_client, student, workbook_
     assert WritingNotebook.objects.filter(user=student, exercise=workbook).count() == 1
 
 
+def test_prompt_only_notebook_has_one_page_and_no_pdf(
+    auth_client, student, workbook_factory
+):
+    workbook = workbook_factory(published=True, without_pdf=True)
+
+    opened = auth_client(student).get(notebook_url(workbook.id)).json()
+    assert opened["page_count"] == 1
+    assert opened["pdf_url"] is None
+
+    saved = auth_client(student).put(
+        page_url(workbook.id, 1), {"body": "In my opinion,"}, format="json"
+    )
+    assert saved.status_code == 200
+    assert saved.json()["word_count"] == 3
+
+    beyond = auth_client(student).put(
+        page_url(workbook.id, 2), {"body": "x"}, format="json"
+    )
+    assert beyond.status_code == 400
+    assert beyond.json()["code"] == "PAGE_OUT_OF_RANGE"
+
+
 def test_reopening_does_not_create_a_second_notebook(auth_client, student, workbook_factory):
     workbook = workbook_factory(published=True)
     client = auth_client(student)

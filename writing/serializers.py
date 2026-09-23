@@ -15,9 +15,10 @@ from .models import WritingExercise, WritingNotebook, WritingPage
 from .validators import validate_writing_pdf
 
 PDF_HELP_TEXT = (
-    "The workbook itself. PDF only, up to "
+    "Optional workbook or question sheet. PDF only, up to "
     f"{settings.MAX_WRITING_PDF_FILE_SIZE_MB} MB. Its page count is read from "
-    "the file; it is never taken from the request."
+    "the file; it is never taken from the request. Omit it for a prompt-only "
+    "task (one writing page)."
 )
 
 
@@ -44,6 +45,7 @@ class WritingProgressMixin(serializers.Serializer):
     has_notebook = serializers.SerializerMethodField()
     pages_started = serializers.SerializerMethodField()
     last_page = serializers.SerializerMethodField()
+    has_pdf = serializers.SerializerMethodField()
 
     def get_has_notebook(self, obj) -> bool:
         return bool(getattr(obj, "has_notebook", False))
@@ -53,6 +55,9 @@ class WritingProgressMixin(serializers.Serializer):
 
     def get_last_page(self, obj) -> int | None:
         return getattr(obj, "last_page", None)
+
+    def get_has_pdf(self, obj) -> bool:
+        return bool(obj.pdf_file)
 
 
 class WritingExerciseListSerializer(WritingProgressMixin, serializers.ModelSerializer):
@@ -70,6 +75,7 @@ class WritingExerciseListSerializer(WritingProgressMixin, serializers.ModelSeria
             "page_count",
             "language",
             "is_published",
+            "has_pdf",
             "has_notebook",
             "pages_started",
             "last_page",
@@ -96,6 +102,7 @@ class WritingExerciseDetailSerializer(
             "language",
             "is_published",
             "published_at",
+            "has_pdf",
             "has_notebook",
             "pages_started",
             "last_page",
@@ -106,10 +113,10 @@ class WritingExerciseDetailSerializer(
 
 
 class WritingExerciseCreateSerializer(serializers.ModelSerializer):
-    """Any authenticated user may upload a workbook; it starts private."""
+    """Any authenticated user may create a writing task; it starts private."""
 
     pdf_file = serializers.FileField(
-        required=True, validators=[validate_writing_pdf], help_text=PDF_HELP_TEXT
+        required=False, validators=[validate_writing_pdf], help_text=PDF_HELP_TEXT
     )
 
     class Meta:

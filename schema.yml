@@ -29,7 +29,7 @@ info:
     | `GET /api/v1/listening/public/exercises/{id}/` | One published exercise, transcript excluded |
     | `GET /api/v1/practice/public/exercises/{id}/segments/` | Segment playback windows, transcript excluded |
     | `GET /api/v1/writing/public/exercises/` | Published writing workbooks |
-    | `GET /api/v1/writing/public/exercises/{id}/` | One published workbook with its PDF URL |
+    | `GET /api/v1/writing/public/exercises/{id}/` | One published writing task (PDF URL may be null) |
     | `GET /api/v1/reading/public/exercises/` | Published reading passages |
     | `GET /api/v1/reading/public/exercises/{id}/` | One published passage with its body |
 
@@ -4077,14 +4077,21 @@ paths:
                 detail: Authentication credentials were not provided.
     post:
       operationId: writing_exercises_create
-      description: Any authenticated user, not just creators - uploading your own
-        book to work through is the point of this domain. The workbook starts private.
-        `page_count` is read from the PDF and ignored if sent.
-      summary: Upload a workbook
+      description: 'Any authenticated user, not just creators. `pdf_file` is optional:
+        omit it (JSON is fine) for a prompt-only task with one writing page. When
+        a PDF is sent, use multipart; `page_count` is read from the file and ignored
+        if sent. The workbook starts private.'
+      summary: Create a writing task
       tags:
       - writing
       requestBody:
         content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WritingExerciseCreateRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/WritingExerciseCreateRequest'
           multipart/form-data:
             schema:
               $ref: '#/components/schemas/WritingExerciseCreateRequest'
@@ -4359,8 +4366,8 @@ paths:
   /api/v1/writing/exercises/{id}/:
     get:
       operationId: writing_exercises_retrieve
-      description: 'Includes `pdf_url`, which the client renders with pdf.js. It is
-        a plain media URL: fetch it *without* an `Authorization` header.'
+      description: 'Includes `pdf_url` (null when there is no file). It is a plain
+        media URL: fetch it *without* an `Authorization` header.'
       summary: Retrieve one workbook
       parameters:
       - in: path
@@ -4398,9 +4405,9 @@ paths:
     patch:
       operationId: writing_exercises_partial_update
       description: |-
-        Owner or admin only. Replacing `pdf_file` re-reads the page count and deletes the old file.
+        Owner or admin only. Attaching the first PDF, or replacing `pdf_file`, re-reads the page count and deletes the old file.
 
-        The replacement is refused with 409 once any learner has started a notebook, or while the workbook is published: page numbers are the only link between a notebook and the PDF, so a re-paginated replacement would silently misfile everything already written.
+        Replacing an existing PDF is refused with 409 once any learner has started a notebook, or while the workbook is published: page numbers are the only link between a notebook and the PDF. Attaching the first PDF to a prompt-only task is allowed even after a notebook has started.
       summary: Update workbook metadata or replace its PDF
       parameters:
       - in: path
@@ -4504,7 +4511,7 @@ paths:
       operationId: writing_exercises_publish_create
       description: 'Owner **and** creator role. Makes the workbook readable by anyone,
         including anonymous visitors. Notebooks stay private regardless: publishing
-        shares the PDF, never anyone''s writing.'
+        shares the prompt and optional PDF, never anyone''s writing.'
       summary: Publish a workbook to the catalogue
       parameters:
       - in: path
@@ -5993,8 +6000,9 @@ components:
         pdf_file:
           type: string
           format: binary
-          description: The workbook itself. PDF only, up to 60 MB. Its page count
-            is read from the file; it is never taken from the request.
+          description: Optional workbook or question sheet. PDF only, up to 60 MB.
+            Its page count is read from the file; it is never taken from the request.
+            Omit it for a prompt-only task (one writing page).
     PracticeAttempt:
       type: object
       description: One recorded attempt, as its own author sees it.
@@ -6882,7 +6890,7 @@ components:
       - text
     WritingExerciseCreateRequest:
       type: object
-      description: Any authenticated user may upload a workbook; it starts private.
+      description: Any authenticated user may create a writing task; it starts private.
       properties:
         title:
           type: string
@@ -6901,10 +6909,10 @@ components:
         pdf_file:
           type: string
           format: binary
-          description: The workbook itself. PDF only, up to 60 MB. Its page count
-            is read from the file; it is never taken from the request.
+          description: Optional workbook or question sheet. PDF only, up to 60 MB.
+            Its page count is read from the file; it is never taken from the request.
+            Omit it for a prompt-only task (one writing page).
       required:
-      - pdf_file
       - title
     WritingExerciseDetail:
       type: object
@@ -6938,7 +6946,8 @@ components:
         page_count:
           type: integer
           readOnly: true
-          description: Read from the PDF on upload. Never supplied by the client.
+          description: Read from the PDF on upload, or 1 when there is no file. Never
+            supplied by the client.
         language:
           type: string
           readOnly: true
@@ -6950,6 +6959,9 @@ components:
           format: date-time
           readOnly: true
           nullable: true
+        has_pdf:
+          type: boolean
+          readOnly: true
         has_notebook:
           type: boolean
           readOnly: true
@@ -6972,6 +6984,7 @@ components:
       - created_at
       - description
       - has_notebook
+      - has_pdf
       - id
       - is_published
       - language
@@ -7005,11 +7018,15 @@ components:
         page_count:
           type: integer
           readOnly: true
-          description: Read from the PDF on upload. Never supplied by the client.
+          description: Read from the PDF on upload, or 1 when there is no file. Never
+            supplied by the client.
         language:
           type: string
           readOnly: true
         is_published:
+          type: boolean
+          readOnly: true
+        has_pdf:
           type: boolean
           readOnly: true
         has_notebook:
@@ -7029,6 +7046,7 @@ components:
       required:
       - created_at
       - has_notebook
+      - has_pdf
       - id
       - is_published
       - language
@@ -7205,8 +7223,8 @@ tags:
   description: Learner-facing dictation. Segment representations never include transcript
     text; it is released on submit or reveal.
 - name: writing
-  description: 'PDF workbooks and the private notebooks learners keep against them.
-    Nothing is scored: a page is saved, not submitted.'
+  description: 'Writing tasks (optional PDF) and the private notebooks learners keep
+    against them. Nothing is scored: a page is saved, not submitted.'
 - name: reading
   description: Paced-reading passages and append-only sessions. The client owns the
     WPM animation; the API stores the body, optional audio, target WPM and actual
