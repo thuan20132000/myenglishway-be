@@ -15,15 +15,15 @@ are not repeated in full.
 
 ## 1. What this domain is
 
-A learner opens a workbook **PDF**, reads it page by page, types answers or
-prose beside it, and comes back later. **Nothing is graded.**
+A learner opens a writing **task**, optionally with a workbook PDF, types
+answers or prose beside it, and comes back later. **Nothing is graded.**
 
 ```
 Anyone with an account                 The same person, later
 ──────────────────────                 ──────────────────────
-upload a workbook PDF                  open it → notebook (auto-created)
+create a task (PDF optional)           open it → notebook (auto-created)
    ↓                                      ↓
-page_count read from the file          render page n  |  type beside it
+page_count = 1, or from the PDF        render page n  |  type beside it
    ↓                                      ↓
 (optional) creators publish            PUT /pages/n/  ← debounced autosave
    ↓                                      ↓
@@ -34,10 +34,10 @@ If you are porting patterns over from the listening client, unlearn these four:
 
 | Listening | Writing |
 |---|---|
-| Audio is the exercise; PDF is an optional handout | **The PDF is the exercise** |
-| Unit of work is a transcript segment | Unit of work is a **PDF page** |
+| Audio is the exercise; PDF is an optional handout | **The prompt is the exercise; PDF is optional** |
+| Unit of work is a transcript segment | Unit of work is a **page** (one page when there is no PDF) |
 | `POST` an attempt, get a score back | `PUT` a page, get the saved page back |
-| Transcript hidden until submit/reveal | The PDF is fully visible from the start |
+| Transcript hidden until submit/reveal | The prompt (and PDF, if any) is fully visible from the start |
 
 There is no `status`, no polling, no `processing` state, no score, no diff, no
 reveal, no attempt history. Do not build UI for any of them.
@@ -49,8 +49,8 @@ reveal, no attempt history. Do not build UI for any of them.
 **A notebook is private to the person who wrote it. Nobody else can read it —
 not the workbook's author, not an admin.**
 
-Publishing a workbook shares the PDF. It never shares anyone's writing. Two
-consequences for the client:
+Publishing a workbook shares the prompt and the PDF, if any. It never shares
+anyone's writing. Two consequences for the client:
 
 - There is no "see submissions" screen for a workbook's owner, and no API that
   could back one. Don't design toward it.
@@ -62,8 +62,9 @@ consequences for the client:
 
 ## 3. Two objects, and the difference between them
 
-**Workbook** (`WritingExercise`) — the PDF, its title, its page count. Shared,
-possibly published, owned by whoever uploaded it.
+**Workbook** (`WritingExercise`) — title, description, optional PDF, page
+count. Shared, possibly published, owned by whoever created it. Without a PDF,
+`page_count` is **1**.
 
 **Notebook** (`WritingNotebook`) — your answers to that workbook. One per person
 per workbook, created the first time you open it. Holds a **page row per page
@@ -88,7 +89,7 @@ Same JWT and same three roles as listening, with one deliberate difference:
 
 | Action | Who |
 |---|---|
-| Upload a workbook | **any authenticated user**, including `student` |
+| Upload / create a workbook | **any authenticated user**, including `student` |
 | Read your own workbook | you |
 | Read someone else's workbook | only if `is_published` |
 | Edit / delete a workbook | owner or admin |
@@ -106,21 +107,38 @@ Gate the "Publish" button on `user.role !== 'student' && workbook.owner.id === u
 
 ## 5. Workbooks
 
-### 5.1 Upload
+### 5.1 Create
 
-`POST /writing/exercises/` — **multipart**, `pdf_file` required.
+`POST /writing/exercises/` — JSON for a prompt-only task, **multipart** when
+attaching `pdf_file`.
 
 | Field | Required | Notes |
 |---|---|---|
-| `title` | yes | |
-| `pdf_file` | yes | PDF only, up to **60 MB** (`MAX_WRITING_PDF_FILE_SIZE_MB`) |
-| `description` | no | |
+| `title` | yes | The prompt heading, e.g. "Task 2 — technology in education" |
+| `pdf_file` | no | PDF only, up to **60 MB** (`MAX_WRITING_PDF_FILE_SIZE_MB`) |
+| `description` | no | The writing prompt itself when there is no PDF |
 | `source` | no | Free text: book, publisher, unit |
 | `language` | no | Defaults `"en"` |
 
-**Do not send `page_count`.** It is read from the PDF server-side and silently
-ignored if you send it — every page-range check downstream trusts that number,
-so it is never taken from the request.
+**Do not send `page_count`.** With a PDF it is read from the file; without one
+it is **1**. Silently ignored if you send it.
+
+Prompt-only (JSON):
+
+```json
+{ "id": 1, "title": "Task 2 — technology in education",
+  "description": "Some people think computers should replace teachers.",
+  "source": "Cambridge IELTS 18",
+  "owner": { "id": 1, "full_name": "Tyler Reese" },
+  "pdf_url": null, "page_count": 1, "language": "en",
+  "is_published": false, "published_at": null, "has_pdf": false,
+  "has_notebook": false, "pages_started": 0, "last_page": null,
+  "created_at": "2026-08-27T03:01:31.708108Z",
+  "updated_at": "2026-08-27T03:01:31.708108Z" }
+```
+
+With a PDF (multipart), `page_count` matches the file and `pdf_url` is a
+**plain media URL** — fetch it *without* an `Authorization` header.
 
 ```json
 { "id": 1, "title": "Grammar in Use", "description": "Units 1-12",
@@ -128,17 +146,20 @@ so it is never taken from the request.
   "owner": { "id": 1, "full_name": "Tyler Reese" },
   "pdf_url": "http://localhost:8000/media/writing-pdf/1/7749afab.pdf",
   "page_count": 4, "language": "en",
-  "is_published": false, "published_at": null,
+  "is_published": false, "published_at": null, "has_pdf": true,
   "has_notebook": false, "pages_started": 0, "last_page": null,
   "created_at": "2026-08-27T03:01:31.708108Z",
   "updated_at": "2026-08-27T03:01:31.708116Z" }
 ```
 
-Upload is **synchronous** — there is no transcription-style wait. When the 201
-lands, the workbook is fully usable. Show a normal upload progress bar and go
-straight to the workbook.
+Create is **synchronous**. When the 201 lands, the task is fully usable: open
+the notebook and write on page 1. Attach a PDF later with
+`PATCH /writing/exercises/{id}/` (multipart). Attaching the *first* PDF is
+allowed even after a notebook has started; **replacing** an existing PDF is
+not, once notebooks exist or the workbook is published.
 
-Three ways it can fail, all on the `pdf_file` field or as a flat code:
+When a PDF *is* sent, three ways it can fail, all on the `pdf_file` field or as
+a flat code:
 
 - `INVALID_PDF_FILE` — not a PDF (checked by header bytes, not just extension)
 - `PDF_FILE_TOO_LARGE` — over the limit
@@ -156,7 +177,7 @@ published ones. Admins see all. Paginated (`?page`, `?page_size`, max 100).
   "results": [
     { "id": 1, "title": "Grammar in Use", "source": "Cambridge",
       "owner": { "id": 1, "full_name": "Tyler Reese" },
-      "page_count": 4, "language": "en", "is_published": false,
+      "page_count": 4, "language": "en", "is_published": false, "has_pdf": true,
       "has_notebook": true, "pages_started": 2, "last_page": 3,
       "created_at": "2026-08-27T03:01:31.708108Z" } ] }
 ```
@@ -178,8 +199,9 @@ A reasonable "My workbooks / Browse" split is `?mine=true` against
 
 ### 5.3 Detail
 
-`GET /writing/exercises/{id}/` — adds `description`, `published_at` and the one
-field that matters: **`pdf_url`**.
+`GET /writing/exercises/{id}/` — adds `description`, `published_at`, `has_pdf`
+and **`pdf_url`** (`null` when there is no file). Hide the pdf.js pane when
+`has_pdf` is false; the notebook is still a full-width editor on page 1.
 
 Someone else's unpublished workbook returns **404, not 403** — a 403 would
 confirm it exists. Render "not found", never "permission denied".
@@ -189,8 +211,10 @@ confirm it exists. Render "not found", never "permission denied".
 `PATCH /writing/exercises/{id}/` (multipart) — owner or admin. `title`,
 `description`, `source`, `language`, `pdf_file`.
 
-**Replacing `pdf_file` is refused with 409 once the workbook is published, or
-once any learner has started a notebook against it.**
+**Replacing an existing `pdf_file` is refused with 409 once the workbook is
+published, or once any learner has started a notebook against it.** Attaching
+the *first* PDF to a prompt-only task is allowed in both cases (it only
+expands `page_count`).
 
 ```json
 { "code": "WRITING_EXERCISE_HAS_NOTEBOOKS",
@@ -499,10 +523,13 @@ everything else is flat with a stable `code`. Branch on `code`, never on
 - **No polling anywhere.** There is no async pipeline in this domain. If you
   find yourself writing a `setInterval` against a writing endpoint, something
   has been ported over from listening by mistake.
-- **`page_count` cannot change once notebooks exist**, which is exactly why
-  page numbers are a safe key for local state and `localStorage` drafts.
-- **Publishing shares the PDF, never the writing.** There is no API that
-  returns another person's pages, so don't design a screen that needs one.
+- **`page_count` cannot change by *replacing* a PDF once notebooks exist**,
+  which is why page numbers are a safe key for local state. Attaching the
+  *first* PDF to a prompt-only task *can* raise `page_count` after writing has
+  started.
+- **Publishing shares the prompt and optional PDF, never the writing.** There
+  is no API that returns another person's pages, so don't design a screen that
+  needs one.
 
 ---
 
@@ -511,10 +538,11 @@ everything else is flat with a stable `code`. Branch on `code`, never on
 1. **Workbook list** — `GET /writing/exercises/`, with `?mine=true` /
    `?is_published=true` tabs. Rows already carry progress, so the "Continue"
    button works from day one.
-2. **Upload** — multipart `POST`, with the three PDF error cases handled.
-3. **The workbook screen** — detail `GET` for `pdf_url`, notebook `GET` for the
-   pages, `react-pdf` on the left, textarea on the right, page navigation.
-   Read-only at this stage.
+2. **Create** — JSON `POST` for a prompt-only Task 1/2, multipart when the
+   user attaches a PDF. Handle the three PDF error cases when a file is sent.
+3. **The workbook screen** — detail `GET` for `pdf_url` / `has_pdf`. When
+   `has_pdf` is false, skip pdf.js and show a full-width editor. Notebook `GET`
+   for the pages, page navigation clamped to `page_count`.
 4. **Autosave** — debounced `PUT`, sequence guard, the three-state indicator.
    This is the step worth spending the time on.
 5. **Continue-writing rail** — `GET /writing/notebooks/` on the home screen.

@@ -37,6 +37,17 @@ def test_public_detail_carries_the_pdf_url(api_client, workbook_factory):
 
     assert body["pdf_url"].endswith(".pdf")
     assert body["page_count"] == published.page_count
+    assert body["has_pdf"] is True
+
+
+def test_public_prompt_only_workbook_has_no_pdf(api_client, workbook_factory):
+    published = workbook_factory(published=True, without_pdf=True)
+
+    body = api_client.get(public_detail_url(published.id)).json()
+
+    assert body["pdf_url"] is None
+    assert body["has_pdf"] is False
+    assert body["page_count"] == 1
 
 
 def test_public_rows_report_no_progress(

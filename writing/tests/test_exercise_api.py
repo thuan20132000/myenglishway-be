@@ -56,10 +56,43 @@ def test_page_count_is_read_from_the_file_not_the_request(
     assert response.json()["page_count"] == 2
 
 
-def test_pdf_is_required(auth_client, student):
-    response = auth_client(student).post(LIST_URL, {"title": "No file"}, format="multipart")
+def test_student_can_create_without_a_pdf(auth_client, student):
+    """A prompt in the title is enough to start writing. The PDF is optional."""
+    response = auth_client(student).post(
+        LIST_URL,
+        {
+            "title": "Task 2 — technology in education",
+            "description": "Some people think computers should replace teachers.",
+            "source": "Cambridge IELTS 18",
+        },
+        format="json",
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["title"] == "Task 2 — technology in education"
+    assert body["page_count"] == 1
+    assert body["pdf_url"] is None
+    assert body["has_pdf"] is False
+    assert body["is_published"] is False
+
+    workbook = WritingExercise.objects.get(pk=body["id"])
+    assert workbook.owner_id == student.id
+    assert not workbook.pdf_file
+
+
+def test_page_count_is_one_when_created_without_a_pdf(auth_client, student):
+    response = auth_client(student).post(
+        LIST_URL, {"title": "Blank page", "page_count": 999}, format="json"
+    )
+    assert response.status_code == 201
+    assert response.json()["page_count"] == 1
+
+
+def test_title_is_required(auth_client, student):
+    response = auth_client(student).post(LIST_URL, {"description": "No title"}, format="json")
     assert response.status_code == 400
-    assert "pdf_file" in response.json()
+    assert "title" in response.json()
 
 
 def test_non_pdf_bytes_are_rejected(auth_client, student):
@@ -106,8 +139,8 @@ def test_corrupt_pdf_header_but_unreadable_body_is_rejected(auth_client, student
     assert response.json()["code"] == "UNREADABLE_PDF_FILE"
 
 
-def test_anonymous_cannot_upload(api_client):
-    response = api_client.post(LIST_URL, {"title": "x"}, format="multipart")
+def test_anonymous_cannot_create(api_client):
+    response = api_client.post(LIST_URL, {"title": "x"}, format="json")
     assert response.status_code == 401
 
 
@@ -155,6 +188,14 @@ def test_list_rows_omit_the_pdf_url(auth_client, student, workbook_factory):
     workbook_factory(owner=student)
     row = auth_client(student).get(LIST_URL).json()["results"][0]
     assert "pdf_url" not in row
+    assert row["has_pdf"] is True
+
+
+def test_prompt_only_list_row_reports_no_pdf(auth_client, student, workbook_factory):
+    workbook_factory(owner=student, without_pdf=True)
+    row = auth_client(student).get(LIST_URL).json()["results"][0]
+    assert row["has_pdf"] is False
+    assert row["page_count"] == 1
 
 
 def test_list_reports_the_callers_own_progress(
@@ -215,6 +256,41 @@ def test_non_owner_cannot_edit_a_published_workbook(auth_client, student, workbo
         detail_url(workbook.id), {"title": "Hijacked"}, format="multipart"
     )
     assert response.status_code == 403
+
+
+def test_owner_can_attach_a_pdf_after_creating_without_one(
+    auth_client, student, tmp_path, settings
+):
+    settings.MEDIA_ROOT = tmp_path
+    created = auth_client(student).post(
+        LIST_URL, {"title": "Task 2"}, format="json"
+    ).json()
+
+    response = auth_client(student).patch(
+        detail_url(created["id"]), {"pdf_file": pdf_upload(pages=4)}, format="multipart"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["page_count"] == 4
+    assert response.json()["has_pdf"] is True
+    assert response.json()["pdf_url"].endswith(".pdf")
+
+
+def test_first_pdf_can_be_attached_after_a_notebook_has_started(
+    auth_client, student, workbook_factory, notebook_factory, tmp_path, settings
+):
+    """Attaching the first sheet expands the page range; it is not a replacement."""
+    settings.MEDIA_ROOT = tmp_path
+    workbook = workbook_factory(owner=student, without_pdf=True)
+    notebook_factory(exercise=workbook)
+
+    response = auth_client(student).patch(
+        detail_url(workbook.id), {"pdf_file": pdf_upload(pages=6)}, format="multipart"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["page_count"] == 6
+    assert response.json()["has_pdf"] is True
 
 
 def test_replacing_the_pdf_recounts_pages_and_drops_the_old_file(
@@ -293,6 +369,13 @@ def test_creator_can_publish_their_workbook(auth_client, creator, workbook_facto
     body = response.json()
     assert body["is_published"] is True
     assert body["published_at"] is not None
+
+
+def test_creator_can_publish_a_prompt_only_workbook(auth_client, creator, workbook_factory):
+    workbook = workbook_factory(owner=creator, without_pdf=True)
+    response = auth_client(creator).post(publish_url(workbook.id))
+    assert response.status_code == 200
+    assert response.json()["is_published"] is True
 
 
 def test_student_cannot_publish_even_their_own_workbook(auth_client, student, workbook_factory):

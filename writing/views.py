@@ -3,11 +3,11 @@
 Two deliberate departures from ``listening.views``:
 
 * **Creating is not creator-gated.** The story that drives this domain is "I
-  upload my own book and work through it", so any authenticated user may add a
-  workbook. It starts private; only *publishing* it to the catalogue needs the
-  creator role.
-* **There is no status.** A workbook is usable the moment it has a PDF, and
-  ``pdf_file`` is required, so publish has nothing to wait for.
+  practise this writing task", so any authenticated user may add a workbook.
+  It starts private; only *publishing* it to the catalogue needs the creator
+  role.
+* **There is no status.** A workbook is usable the moment it has a title. The
+  PDF is optional accompaniment, attached on create or later.
 """
 
 from django.db.models import (
@@ -112,33 +112,34 @@ def annotate_for_user(queryset, user):
         tags=["writing"],
         summary="Retrieve one workbook",
         description=(
-            "Includes `pdf_url`, which the client renders with pdf.js. It is a "
-            "plain media URL: fetch it *without* an `Authorization` header."
+            "Includes `pdf_url` (null when there is no file). It is a plain "
+            "media URL: fetch it *without* an `Authorization` header."
         ),
         responses={200: WritingExerciseDetailSerializer, 404: ErrorSerializer},
     ),
     create=extend_schema(
         tags=["writing"],
-        summary="Upload a workbook",
+        summary="Create a writing task",
         description=(
-            "Any authenticated user, not just creators - uploading your own "
-            "book to work through is the point of this domain. The workbook "
-            "starts private. `page_count` is read from the PDF and ignored if "
-            "sent."
+            "Any authenticated user, not just creators. `pdf_file` is optional: "
+            "omit it (JSON is fine) for a prompt-only task with one writing "
+            "page. When a PDF is sent, use multipart; `page_count` is read "
+            "from the file and ignored if sent. The workbook starts private."
         ),
-        request={"multipart/form-data": WritingExerciseCreateSerializer},
+        request=WritingExerciseCreateSerializer,
         responses={201: WritingExerciseDetailSerializer, **error_responses(400, 403)},
     ),
     partial_update=extend_schema(
         tags=["writing"],
         summary="Update workbook metadata or replace its PDF",
         description=(
-            "Owner or admin only. Replacing `pdf_file` re-reads the page count "
-            "and deletes the old file.\n\n"
-            "The replacement is refused with 409 once any learner has started a "
-            "notebook, or while the workbook is published: page numbers are the "
-            "only link between a notebook and the PDF, so a re-paginated "
-            "replacement would silently misfile everything already written."
+            "Owner or admin only. Attaching the first PDF, or replacing "
+            "`pdf_file`, re-reads the page count and deletes the old file.\n\n"
+            "Replacing an existing PDF is refused with 409 once any learner "
+            "has started a notebook, or while the workbook is published: page "
+            "numbers are the only link between a notebook and the PDF. "
+            "Attaching the first PDF to a prompt-only task is allowed even "
+            "after a notebook has started."
         ),
         request={"multipart/form-data": WritingExerciseUpdateSerializer},
         responses={
@@ -245,7 +246,7 @@ class WritingExerciseViewSet(
         description=(
             "Owner **and** creator role. Makes the workbook readable by anyone, "
             "including anonymous visitors. Notebooks stay private regardless: "
-            "publishing shares the PDF, never anyone's writing."
+            "publishing shares the prompt and optional PDF, never anyone's writing."
         ),
         request=None,
         responses={

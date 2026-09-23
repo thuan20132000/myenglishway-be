@@ -6,6 +6,12 @@ from writing.models import WritingExercise, WritingNotebook, WritingPage
 pytestmark = pytest.mark.django_db
 
 
+def test_prompt_only_workbook_has_no_pdf_path(workbook_factory):
+    workbook = workbook_factory(without_pdf=True)
+    assert workbook.has_pdf is False
+    assert workbook.page_count == 1
+
+
 def test_pdf_is_namespaced_by_owner(workbook_factory, tmp_path, settings):
     settings.MEDIA_ROOT = tmp_path
     workbook = workbook_factory()

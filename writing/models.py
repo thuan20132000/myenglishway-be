@@ -1,9 +1,10 @@
 """Models for the writing domain.
 
-A writing exercise is a workbook PDF, and the PDF *is* the exercise - not an
-optional handout beside something else, as in ``listening``. The file stays
-opaque to the server: it is validated, its pages are counted, and it is served
-back for the client to render. Nothing here parses, extracts or scores.
+A writing exercise is a prompt the learner writes against. The optional PDF is
+a workbook or question sheet, not the exercise itself: title and description
+are enough to start (IELTS Task 1/2). When a file is present it stays opaque
+to the server - validated, page-counted, served back for the client to render.
+Nothing here parses, extracts or scores.
 
 The learner's record is a ``WritingNotebook``: one living document per learner
 per workbook, upserted page by page. There is no attempt history and no score.
@@ -32,11 +33,11 @@ def writing_pdf_path(instance: "WritingExercise", filename: str) -> str:
 
 
 class WritingExercise(TimeStampedModel):
-    """A workbook. Ready the moment it has a PDF - no status machine.
+    """A writing prompt. Ready the moment it has a title - no status machine.
 
-    ``listening`` needs one because Whisper runs asynchronously; here the
-    upload is synchronous and ``pdf_file`` is required, so "has a file" and
-    "is publishable" are the same statement.
+    ``pdf_file`` is optional: a Task 2 prompt in ``title``/``description`` is
+    enough to open a one-page notebook. When a PDF is attached, ``page_count``
+    is read from the file.
     """
 
     owner = models.ForeignKey(
@@ -51,9 +52,18 @@ class WritingExercise(TimeStampedModel):
         blank=True,
         help_text="Where the workbook came from - book title, publisher, unit.",
     )
-    pdf_file = models.FileField(upload_to=writing_pdf_path, max_length=255)
+    pdf_file = models.FileField(
+        upload_to=writing_pdf_path,
+        null=True,
+        blank=True,
+        max_length=255,
+        help_text="Optional workbook or question sheet shown beside the notebook.",
+    )
     page_count = models.PositiveIntegerField(
-        help_text="Read from the PDF on upload. Never supplied by the client."
+        help_text=(
+            "Read from the PDF on upload, or 1 when there is no file. "
+            "Never supplied by the client."
+        )
     )
     language = models.CharField(max_length=10, default="en")
     is_published = models.BooleanField(default=False, db_index=True)
@@ -74,6 +84,10 @@ class WritingExercise(TimeStampedModel):
 
     def __str__(self) -> str:
         return self.title
+
+    @property
+    def has_pdf(self) -> bool:
+        return bool(self.pdf_file)
 
 
 class WritingNotebook(TimeStampedModel):
@@ -126,7 +140,7 @@ class WritingNotebook(TimeStampedModel):
 
 
 class WritingPage(TimeStampedModel):
-    """What the learner typed beside one page of the PDF.
+    """What the learner typed beside one page of the prompt (or PDF).
 
     Rows are created lazily: a page with no row has never been started, which
     is what "12 / 40 pages started" counts. An existing row with an empty
